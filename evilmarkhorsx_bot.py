@@ -44,9 +44,9 @@ FILES = {
  ".gitignore": "__pycache__/\n*.pyc\n.env\nusers.json\ndata/\nvenv/\n*.zip\n",
  ".env.example": ("BOT_TOKEN=123456:ABC\nLIVE=1\nCONCURRENCY=8\n"
                   "WEBSITE=https://evilmarkhors.me\nCREDIT=Config by Evil Markhors\nSTORE_PATH=users.json\n"),
- "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\nENV PYTHONUNBUFFERED=1 STORE_PATH=/data/users.json\n"
+ "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\nENV PYTHONUNBUFFERED=1 STORE_PATH=/app/users.json\n"
                 "COPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n"
-                f"COPY {SELF} bot.py\nVOLUME [\"/data\"]\nCMD [\"python\",\"bot.py\"]\n"),
+                f"COPY {SELF} bot.py\nCMD [\"python\",\"bot.py\"]\n"),
  "docker-compose.yml": ("services:\n  bot:\n    build: .\n    restart: unless-stopped\n    environment:\n"
                         "      - BOT_TOKEN=${BOT_TOKEN}\n      - LIVE=1\n      - STORE_PATH=/data/users.json\n"
                         "    volumes:\n      - ./data:/data\n"),
