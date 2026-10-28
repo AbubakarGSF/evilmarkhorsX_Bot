@@ -1,0 +1,7 @@
+async def on_error(u, c):
+    logging.error("HANDLER ERROR", exc_info=c.error)
+    try:
+        if u and u.effective_message:
+            await u.effective_message.reply_text(f"Error: {c.error}")
+    except Exception:
+        pass
