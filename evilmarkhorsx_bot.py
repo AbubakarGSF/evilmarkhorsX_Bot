@@ -871,26 +871,43 @@ async def process_split(ip, op, cfg, live, prog):
                     elif field == "country":
                         val = norm_country(val)
                     label = bucket_for(val, buckets, is_num)
+                    body = build_cookie_file(data, cookies)
+                    base = os.path.basename(name) or "account.txt"
                     if label:
-                        out[label].extend(cookies)
+                        out[label].append((base, body))
                         prog.ok += 1
                     else:
-                        unmatched.extend(cookies)
+                        unmatched.append((base, body))
                         prog.fail += 1
                 except Exception:
                     logging.exception("split %s", name)
                     prog.fail += 1
                 prog.done += 1
                 await prog.update()
+
+    def unique(base, used):
+        fn = base
+        i = 2
+        while fn in used:
+            stem, ext = os.path.splitext(base)
+            fn = stem + "_" + str(i) + ext
+            i += 1
+        used.add(fn)
+        return fn
+
     summary = ["Split by " + field, ""]
     with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
-        for label, lines in out.items():
+        for label, items in out.items():
             safe = re.sub(r"[^A-Za-z0-9._+-]", "_", label)
-            z.writestr("split_" + safe + ".txt", "\n".join(lines) + ("\n" if lines else ""))
-            summary.append(label + ": " + str(len(lines)))
-        z.writestr("split_unmatched.txt", "\n".join(unmatched) + ("\n" if unmatched else ""))
+            used = set()
+            for base, body in items:
+                z.writestr("split_" + safe + "/" + unique(base, used), body)
+            summary.append(label + ": " + str(len(items)))
+        used = set()
+        for base, body in unmatched:
+            z.writestr("split_unmatched/" + unique(base, used), body)
         summary.append("unmatched: " + str(len(unmatched)))
-        z.writestr("split_summary.txt", "\n".join(summary))
+        z.writestr("summary.txt", "\n".join(summary))
 
 
 async def run_ulp_batch(uid, lines, prog):
@@ -994,7 +1011,7 @@ async def help_cmd(u, c):
     await u.message.reply_text(
         "ULP: user:pass | email:pass | user:email:pass | ...:2fa\n"
         "Code aane par: username code (har line alag).\n\n"
-        "VERIFY: /mode verify -> zip bhejo -> working/ aur dead/ folders\n\n"
+        "VERIFY: /verify -> zip bhejo -> working/ aur dead/ folders\n\n"
         "Admin split: /split followers 0-100,100-500,500+\n"
         "Fields: " + ", ".join(KEYMAP)
     )
@@ -1039,7 +1056,7 @@ async def mode_cmd(u, c):
 
 async def verify_cmd(u, c):
     await set_cfg(u.effective_user.id, mode="verify")
-    await u.message.reply_text("Mode = verify\nAb cookie zip bhejo — working/ aur dead/ folders milenge.")
+    await u.message.reply_text("Mode = verify\nAb cookie zip bhejo - working/ aur dead/ folders milenge.")
 
 
 async def live_cmd(u, c):
