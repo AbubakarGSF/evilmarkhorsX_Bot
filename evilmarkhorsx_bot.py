@@ -4,6 +4,7 @@ Evil Markhors Bot - HARDENED (clean)
 Live progress + crash-proof + auto-recovery.
 """
 import os
+import io
 import re
 import sys
 import json
@@ -765,6 +766,17 @@ def build_zip(path, uid):
 
 
 # ============================ HANDLERS ============================
+async def _send_zip(u, path, filename, caption):
+    with open(path, "rb") as f:
+        data = f.read()
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        bad = z.testzip()
+        if bad:
+            raise RuntimeError("zip corrupt: " + str(bad))
+    await u.message.reply_document(
+        InputFile(io.BytesIO(data), filename=filename),
+        caption=caption,
+    )
 async def start(u, c):
     await u.message.reply_text(
         "Evil Markhors Bot\n\nModes:\n"
@@ -924,17 +936,20 @@ async def handle_file(u, c, doc):
         if mode == "cookies":
             op = os.path.join(tmp, "out.zip")
             if not is_zip:
-                with zipfile.ZipFile(op, "w") as z:
-                    z.write(ip, "reworked.txt")
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    sem = asyncio.Semaphore(1)
+                    out = await rework_cookie(sample, client, g["live"], sem)
+                with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
+                    z.writestr("reworked.txt", out)
                 await _edit(msg, "1 file rework ho gayi.")
                 ok, fail, total = 1, 0, 1
             else:
                 prog = Progress(msg, 0, "COOKIES rework")
                 prog.phase = "Rework"
                 ok, fail, total = await process_cookie_zip(ip, op, g["live"], prog)
-            await u.message.reply_document(
-                InputFile(op, filename="evilmarkhors_cookies.zip"),
-                caption="Done: " + str(ok) + " ok, " + str(fail) + " fail\n" + WEBSITE + "\n" + CREDIT,
+            await _send_zip(
+                u, op, "evilmarkhors_cookies.zip",
+                "Done: " + str(ok) + " ok, " + str(fail) + " fail\n" + WEBSITE + "\n" + CREDIT,
             )
             await _edit(msg, "Complete")
             await _hard_clear(uid)
@@ -996,10 +1011,10 @@ async def finalize_batch(uid, u):
     for r in b["results"]:
         if r and r.get("ok"):
             succ += 1
-    await u.message.reply_document(
-        InputFile(op, filename="evilmarkhors_" + b["mode"] + ".zip"),
-        caption=("Done | ok " + str(succ) + " | fail " + str(b["fail"])
-                 + " | pending " + str(len(PEND.get(uid, {}))) + "\n" + WEBSITE + "\n" + CREDIT),
+    await _send_zip(
+        u, op, "evilmarkhors_" + b["mode"] + ".zip",
+        "Done | ok " + str(succ) + " | fail " + str(b["fail"])
+        + " | pending " + str(len(PEND.get(uid, {}))) + "\n" + WEBSITE + "\n" + CREDIT,
     )
     await _hard_clear(uid)
 
