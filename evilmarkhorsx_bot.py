@@ -1102,6 +1102,12 @@ async def post_init(app):
             pass
 
 
+async def on_doc(u, c):
+    doc = u.message.document
+    if not doc:
+        return
+    await handle_file(u, c, doc)
+    
 def main():
     made = bootstrap()
     if made:
@@ -1118,7 +1124,7 @@ def main():
     ]
     for cmd, fn in handlers:
         app.add_handler(CommandHandler(cmd, fn))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_doc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
     logging.info("Bot chalu | conc=%s live=%s", CONCURRENCY, LIVE_DEFAULT)
