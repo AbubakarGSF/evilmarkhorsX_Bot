@@ -2826,8 +2826,9 @@ async def _hard_clear(uid, keep_tmp=False):
     clear_batch_file(uid)
 
 
-async def ask_store(u, uid, st):
-    st["msg"] = await u.message.reply_text(
+async def ask_store(msg, st):
+    st["msg"] = msg
+    await msg.edit_text(
         "File mili: " + str(st["count"]) + " account(s)\n\n"
         "Sirf check karke file wapas, ya working accounts DB mein bhi add karne hain?",
         reply_markup=InlineKeyboardMarkup([[
