@@ -2904,6 +2904,10 @@ async def handle_file(u, c, doc):
     g = ucfg(uid)
     msg = await u.message.reply_text("File mili - shuru...")
     try:
+        old = STORE_ASK.pop(uid, None)
+        if old:
+            shutil.rmtree(old.get("tmp", ""), ignore_errors=True)
+
         if uid in BATCH:
             if time.time() - BATCH[uid].get("started", time.time()) < 60:
                 await _edit(msg, "Pehla batch chal raha hai. /cancel ya /finalize.")
@@ -2971,13 +2975,12 @@ async def handle_file(u, c, doc):
             if smode == "ask":
                 st = {"tmp": tmp, "ip": ip, "is_zip": is_zip, "live": g["live"], "count": cnt}
                 STORE_ASK[uid] = st
-                await _edit(msg, "Download ho gayi.")
-                await ask_store(u, uid, st)
-                await _hard_clear(uid)
+                await _hard_clear(uid, keep_tmp=True)
+                await ask_store(msg, st)
                 return
             st = {"tmp": tmp, "ip": ip, "is_zip": is_zip, "live": g["live"],
                   "count": cnt, "msg": msg}
-            await _hard_clear(uid)
+            await _hard_clear(uid, keep_tmp=True)
             await process_with_store(u, uid, st, smode)
             return
         lines = []
