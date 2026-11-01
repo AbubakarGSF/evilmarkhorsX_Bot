@@ -2813,7 +2813,7 @@ def detect_mode(text, forced):
     return "cookies" if n >= 3 else "ulp"
 
 
-async def _hard_clear(uid):
+async def _hard_clear(uid, keep_tmp=False):
     for v in PEND.get(uid, {}).values():
         try:
             await v["client"].aclose()
@@ -2821,7 +2821,7 @@ async def _hard_clear(uid):
             pass
     PEND.pop(uid, None)
     b = BATCH.pop(uid, None)
-    if b:
+    if b and not keep_tmp:
         shutil.rmtree(b["tmp"], ignore_errors=True)
     clear_batch_file(uid)
 
