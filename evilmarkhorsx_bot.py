@@ -2857,6 +2857,10 @@ async def on_store_cb(u, c):
 
 async def process_with_store(u, uid, st, choice):
     tmp, ip, is_zip, live = st["tmp"], st["ip"], st["is_zip"], st["live"]
+    if not os.path.exists(ip):
+        await u.message.reply_text("File temp se gayi, dobara bhejo.")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return
     msg = st.get("msg")
     sink = []
     op = os.path.join(tmp, "out.zip")
