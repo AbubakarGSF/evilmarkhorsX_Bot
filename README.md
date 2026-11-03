@@ -129,6 +129,12 @@ posted twice.
 If a proxy password contains `,` or spaces, percent-encode it (`%2C`, `%20`)
 or put the proxy in `PROXY_FILE` (one per line).
 
+Provider links that look like `https://1.1.1.1:2001/name` are accepted, but the
+path part is ignored (httpx only uses scheme/host/port/auth). If the proxy
+needs a login, pass it as `http://user:pass@host:port` and run `/proxy test`:
+`407` means auth is missing, an SSL error means the port is plain HTTP (use
+`http://`).
+
 Admin commands: `/proxy` (status, credentials masked), `/proxy test`
 (ok/fail + latency per proxy), `/proxy list`, `/proxy reload` (re-read
 `PROXY_FILE`). `/diag` also shows the proxy count.

@@ -2218,6 +2218,7 @@ PROXY_UNSUPPORTED = ("vless", "vmess", "trojan", "ss", "shadowsocks",
                      "ssh", "ftp")
 PROXIES = []
 PROXY_SKIPPED = []
+PROXY_HINT = set()
 
 
 def mask_proxy(url):
@@ -2264,6 +2265,11 @@ def norm_proxy(raw):
     if p.scheme not in PROXY_SCHEMES or not p.host:
         logging.warning("proxy skip: %s", mask_proxy(s))
         return None
+    if p.path not in ("", "/"):
+        # https://host:port/naam jaisi link: path httpx ignore karta hai.
+        PROXY_HINT.add(mask_proxy(str(p)))
+        logging.warning("proxy path ignore ho raha hai: %s "
+                        "(format: http://user:pass@host:port)", mask_proxy(str(p)))
     return str(p)
 
 
@@ -2393,8 +2399,25 @@ def proxy_status_text():
         lines.append("! socksio missing: pip install 'httpx[socks]'")
     if PROXY_SKIPPED:
         lines.append("skipped: " + ", ".join(sorted(set(PROXY_SKIPPED))) + "://")
+    if PROXY_HINT:
+        lines.append("! path wali link: " + ", ".join(sorted(PROXY_HINT)[:3])
+                     + " - path ignore hota hai. Chahiye: http://user:pass@host:port")
     lines += [str(i + 1) + ". " + mask_proxy(p) for i, p in enumerate(PROXIES[:40])]
     return "\n".join(lines)
+
+
+def _proxy_tips(res):
+    bad = [r for r in res if r]
+    tips = []
+    if any(r.get("code") == 407 for r in bad):
+        tips.append("407 = proxy auth chahiye (user:pass@host:port)")
+    if any("SSL" in (r.get("why") or "") for r in bad):
+        tips.append("SSL error = https:// ki jagah http:// try karo")
+    if any((r.get("why") or "") in ("ConnectError", "ConnectTimeout") for r in bad):
+        tips.append("connect fail = host/port galat ya proxy down")
+    if any(r.get("code") in (403, 429) for r in bad):
+        tips.append("403/429 = proxy IP X se blocked/limited")
+    return ("\n\ntips:\n- " + "\n- ".join(tips)) if tips else ""
 
 
 async def probe_proxy(proxy):
@@ -2866,6 +2889,25 @@ def build_zip(path, uid):
 
 
 # ============================ HANDLERS ============================
+def _ctx_msg(u):
+    """Message for replies. Callback updates have u.message == None."""
+    m = getattr(u, "effective_message", None)
+    if m is None:
+        q = getattr(u, "callback_query", None)
+        m = getattr(q, "message", None)
+    return m
+
+
+async def _ctx_say(u, text):
+    m = _ctx_msg(u)
+    if m is not None:
+        return await m.reply_text(text)
+    chat = getattr(u, "effective_chat", None)
+    if chat is not None:
+        return await chat.send_message(text)
+    raise RuntimeError("chat nahi mila")
+
+
 async def _send_zip(u, path, filename, caption):
     size = os.path.getsize(path)
     if size > ZIP_UPLOAD_MAX:
@@ -2873,8 +2915,17 @@ async def _send_zip(u, path, filename, caption):
                            + " MB) - chhote batches mein todo")
     with open(path, "rb") as f:
         data = f.read()
-    await u.message.reply_document(InputFile(io.BytesIO(data), filename=filename),
-                                   caption=(caption or "")[:1000])
+    f = InputFile(io.BytesIO(data), filename=filename)
+    cap = (caption or "")[:1000]
+    chat = getattr(u, "effective_chat", None)
+    msg = _ctx_msg(u)
+    # callback flow mein u.message None hota hai, isliye chat/effective use karo
+    if chat is not None:
+        await chat.send_document(f, caption=cap)
+    elif msg is not None:
+        await msg.reply_document(f, caption=cap)
+    else:
+        raise RuntimeError("chat nahi mila")
 
 
 CMD_PAGES = [
@@ -3085,7 +3136,7 @@ async def proxy_cmd(u, c):
                          + (" " + r["why"] if r.get("why") else "")
                          + " " + str(r["ms"]) + "ms")
         await _edit(msg, "Proxy test: ok " + str(len(good)) + "/" + str(len(PROXIES))
-                    + "\n" + "\n".join(lines[:40]))
+                    + "\n" + "\n".join(lines[:40]) + _proxy_tips(res))
         return
     await u.message.reply_text(
         proxy_status_text()
@@ -3901,7 +3952,7 @@ async def on_store_cb(u, c):
 async def verify_with_store(u, uid, st, choice):
     tmp, ip = st["tmp"], st.get("ip", "")
     if not os.path.exists(ip):
-        await u.message.reply_text("File temp se gayi, dobara bhejo.")
+        await _ctx_say(u, "File temp se gayi, dobara bhejo.")
         await _hard_clear(uid)
         return
     want_db = choice in ("db", "both") and db_enabled()
@@ -3929,7 +3980,7 @@ async def verify_with_store(u, uid, st, choice):
         if want_file:
             await _send_zip(u, op, "evilmarkhors_verify.zip", cap)
         else:
-            await u.message.reply_text("Done\n" + cap)
+            await _ctx_say(u, "Done\n" + cap)
         await _edit(msg, "Complete")
     except Exception as e:
         logging.exception("verify_with_store")
@@ -3942,7 +3993,7 @@ async def verify_with_store(u, uid, st, choice):
 async def process_with_store(u, uid, st, choice):
     tmp, ip, is_zip, live = st["tmp"], st["ip"], st["is_zip"], st["live"]
     if not os.path.exists(ip):
-        await u.message.reply_text("File temp se gayi, dobara bhejo.")
+        await _ctx_say(u, "File temp se gayi, dobara bhejo.")
         shutil.rmtree(tmp, ignore_errors=True)
         return
     msg = st.get("msg")
@@ -3991,7 +4042,7 @@ async def process_with_store(u, uid, st, choice):
         if want_file:
             await _send_zip(u, op, "evilmarkhors_cookies.zip", cap)
         else:
-            await u.message.reply_text("Done\n" + cap)
+            await _ctx_say(u, "Done\n" + cap)
         await _edit(msg, "Complete")
     except Exception as e:
         logging.exception("process_with_store")
