@@ -5,6 +5,7 @@ Evil Markhors Bot - HARDENED + CAMPAIGN + SUPABASE POOL + COMMANDS
 import os, io, re, sys, json, stat, hmac, time, random, base64, struct, hashlib
 import secrets, string, asyncio, logging, tempfile, zipfile, shutil, traceback
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote, unquote
 
 try:
     import httpx
@@ -2265,8 +2266,18 @@ def norm_proxy(raw):
     if p.scheme not in PROXY_SCHEMES or not p.host:
         logging.warning("proxy skip: %s", mask_proxy(s))
         return None
-    if p.path not in ("", "/"):
-        # https://host:port/naam jaisi link: path httpx ignore karta hai.
+    if p.path not in ("", "/") and not (p.username or p.password):
+        # Provider style: https://host:port/user/pass (ya /user:pass).
+        segs = [x for x in p.path.split("/") if x]
+        if len(segs) == 1 and ":" in segs[0]:
+            segs = segs[0].split(":", 1)
+        if len(segs) == 2:
+            auth = quote(unquote(segs[0]), safe="") + ":" + quote(unquote(segs[1]), safe="")
+            port = ":" + str(p.port) if p.port else ""
+            out = p.scheme + "://" + auth + "@" + p.host + port
+            logging.info("proxy auth path se liya: %s", mask_proxy(out))
+            return out
+        # https://host:port/token jaisi link: path httpx ignore karta hai.
         PROXY_HINT.add(mask_proxy(str(p)))
         logging.warning("proxy path ignore ho raha hai: %s "
                         "(format: http://user:pass@host:port)", mask_proxy(str(p)))

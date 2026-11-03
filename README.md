@@ -135,6 +135,10 @@ needs a login, pass it as `http://user:pass@host:port` and run `/proxy test`:
 `407` means auth is missing, an SSL error means the port is plain HTTP (use
 `http://`).
 
+Path-auth links are converted automatically: `https://host:port/user/pass`
+(or `/user:pass`) becomes `https://user:pass@host:port`, so a provider that
+prints credentials in the path works as-is.
+
 Admin commands: `/proxy` (status, credentials masked), `/proxy test`
 (ok/fail + latency per proxy), `/proxy list`, `/proxy reload` (re-read
 `PROXY_FILE`). `/diag` also shows the proxy count.
