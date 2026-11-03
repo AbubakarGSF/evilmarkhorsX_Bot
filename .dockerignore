@@ -1,6 +1,12 @@
 venv
+.venv
 __pycache__
+*.pyc
 *.zip
 .env
-data
 users.json
+del_data
+camp_media
+*.log
+.git
+.github

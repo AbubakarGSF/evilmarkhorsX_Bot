@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# secrets + local state
+.env
+users.json
+camp_*.json
+batch_*.json
+
+# runtime data
+*.zip
+*.log
+del_data/
+camp_media/
+
+# envs
+venv/
+.venv/
+env/
+.DS_Store
+.idea/
+.vscode/
