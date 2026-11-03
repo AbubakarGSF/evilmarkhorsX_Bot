@@ -104,6 +104,37 @@ minutes.
 - `MEDIA_WAIT_MAX` (default 300 s) - how long the bot polls X while it
   processes an uploaded video/GIF before giving up on that post.
 
+## Proxies
+
+X traffic can go through one or more proxies; Telegram and Supabase always
+stay direct.
+
+| Var | Meaning |
+| --- | --- |
+| `PROXIES` | comma/space separated list, e.g. `http://u:p@1.2.3.4:8080,socks5://5.6.7.8:1080` |
+| `PROXY_FILE` | path to a file with one proxy per line (`#` comments ok); can live on the volume |
+| `PROXY_MODE` | `rotate` (round robin, default) or `random` |
+| `PROXY_TEST_URL` | health-check URL, default `https://api.x.com/1.1/help.json` |
+
+Supported schemes are `http`, `https` and `socks5` (needs `httpx[socks]`,
+already in `requirements.txt`). Hiddify/xray share links (`vless://`,
+`vmess://`, `ss://`, `trojan://`) are **not** HTTP proxies and cannot be used
+directly - export the subscription into a local SOCKS5 listener (xray or
+sing-box) and point `PROXIES` at it.
+
+Rotation is per request, and only connection errors fail over to the next
+proxy; a request that was already sent is never retried, so a tweet cannot be
+posted twice.
+
+If a proxy password contains `,` or spaces, percent-encode it (`%2C`, `%20`)
+or put the proxy in `PROXY_FILE` (one per line).
+
+Admin commands: `/proxy` (status, credentials masked), `/proxy test`
+(ok/fail + latency per proxy), `/proxy list`, `/proxy reload` (re-read
+`PROXY_FILE`). `/diag` also shows the proxy count.
+
+With no `PROXIES` set the bot behaves exactly as before (direct).
+
 ## Deployment
 
 Docker:

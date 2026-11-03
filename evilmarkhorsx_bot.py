@@ -67,6 +67,13 @@ REVERIFY_CONC = int(os.getenv("REVERIFY_CONC", "4"))
 DEAD_AFTER = int(os.getenv("DEAD_AFTER", "2"))
 JOB_REAP_MIN = float(os.getenv("JOB_REAP_MIN", "30"))
 ZIP_UPLOAD_MAX = int(os.getenv("ZIP_UPLOAD_MAX", str(45 * 1024 * 1024)))
+# Proxies: sirf X traffic in par jaata hai, Telegram/Supabase direct rehte hain.
+PROXIES_RAW = os.getenv("PROXIES", "")
+PROXY_FILE = os.getenv("PROXY_FILE", "").strip()
+PROXY_MODE = os.getenv("PROXY_MODE", "rotate").strip().lower()
+PROXY_TEST_URL = os.getenv("PROXY_TEST_URL", "https://api.x.com/1.1/help.json")
+PROXY_HOSTS = ("api.x.com", "upload.x.com", "api.twitter.com",
+               "upload.twitter.com", "x.com", "twitter.com")
 HTTPONLY_NAMES = {"auth_token", "ct0", "kdt", "twid", "guest_id",
                   "guest_id_marketing", "guest_id_ads"}
 
@@ -197,7 +204,7 @@ alter table accounts enable row level security;
 """
 
 FILES = {
-    "requirements.txt": "python-telegram-bot>=21.0,<23\nhttpx>=0.27,<1\n",
+    "requirements.txt": "python-telegram-bot>=21.0,<23\nhttpx[socks]>=0.27,<1\n",
     ".gitignore": "__pycache__/\n*.pyc\n.env\n*.tmp\nusers.json\nvenv/\n*.zip\nbatch_*.json\ndel_data/\ncamp_media/\ncamp_*.json\n",
     ".dockerignore": "venv\n__pycache__\n*.zip\n*.tmp\n.env\nusers.json\nbatch_*.json\ncamp_*.json\ndel_data\ncamp_media\n",
     ".env.example": ("BOT_TOKEN=123456:ABC\nLIVE=1\nCONCURRENCY=8\n"
@@ -209,7 +216,10 @@ FILES = {
                      "JOB_REAP_MIN=30\nZIP_UPLOAD_MAX=47185920\n"
                      "SUPABASE_URL=https://xxxx.supabase.co\nSUPABASE_KEY=service_role_key\n"
                      "DB_TABLE=accounts\nREVERIFY_HOURS=24\nREVERIFY_BATCH=400\n"
-                     "REVERIFY_CONC=4\nDEAD_AFTER=2\n"),
+                     "REVERIFY_CONC=4\nDEAD_AFTER=2\n"
+                     "# proxies (X traffic only). HTTP/SOCKS5 endpoints, not vless://\n"
+                     "PROXIES=\nPROXY_FILE=\nPROXY_MODE=rotate\n"
+                     "PROXY_TEST_URL=https://api.x.com/1.1/help.json\n"),
     "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\n"
                    "ENV PYTHONUNBUFFERED=1 STORE_PATH=/app/users.json\n"
                    "COPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n"
@@ -225,6 +235,9 @@ FILES = {
                   "Modes: send cookie `.txt`/`.zip`, ULP `user:pass` lines, `/verify`, "
                   "`/split`, `/extract`.\n"
                   "Admin: `/camp` campaigns, `/db` Supabase, `/tweet`, `/delbatch`.\n\n"
+                  "Proxies: `PROXIES=http://u:p@host:port,socks5://host:port` (X traffic\n"
+                  "only, http/https/socks5; vless/vmess/ss links need xray/sing-box).\n"
+                  "`/proxy test` se check karo.\n\n"
                   "State (`users.json`, `batch_*.json`, `camp_*.json`, `del_data/`, "
                   "`camp_media/`) lives in the directory of `STORE_PATH` - point it at "
                   "a Railway volume so it survives redeploys.\n"),
@@ -961,7 +974,7 @@ def _logged_in(cl):
 
 
 async def ulp_login(ulp):
-    cl = httpx.AsyncClient(follow_redirects=True)
+    cl = http_client()
     try:
         r = await cl.post("https://api.twitter.com/1.1/guest/activate.json",
                           headers=_H(cl), timeout=TIMEOUT)
@@ -2194,13 +2207,223 @@ async def reverify_loop(app):
         await asyncio.sleep(max(REVERIFY_HOURS, 1) * 3600)
 
 
+# ============================ PROXIES ============================
+# PROXIES="http://u:p@1.2.3.4:8080, socks5://5.6.7.8:1080"
+# PROXY_FILE=/data/proxies.txt  (ek line = ek proxy, # comment)
+# PROXY_MODE=rotate|random
+# Sirf X hosts proxy se jaate hain; Telegram aur Supabase direct.
+PROXY_SCHEMES = ("http", "https", "socks5")
+PROXY_UNSUPPORTED = ("vless", "vmess", "trojan", "ss", "shadowsocks",
+                     "hysteria", "hysteria2", "tuic", "wireguard", "wg",
+                     "ssh", "ftp")
+PROXIES = []
+PROXY_SKIPPED = []
+
+
+def mask_proxy(url):
+    """Creds chhupa kar log/message ke liye safe naam."""
+    try:
+        p = httpx.URL(url)
+    except Exception:
+        return "?"
+    auth = "***@" if (p.username or p.password) else ""
+    port = ":" + str(p.port) if p.port else ""
+    return (p.scheme or "http") + "://" + auth + (p.host or "?") + port
+
+
+def norm_proxy(raw):
+    """Ek proxy line ko httpx-compatible URL banao, ya None."""
+    s = (raw or "").strip().strip('"').strip("'")
+    if not s or s.startswith("#"):
+        return None
+    low = s.lower()
+    for bad in PROXY_UNSUPPORTED:
+        if low.startswith(bad + "://"):
+            # vless/vmess/ss links httpx nahi chala sakta - inhe xray/sing-box
+            # ke local socks5 port mein convert karna padta hai.
+            logging.warning("proxy skip: %s:// httpx support nahi karta", bad)
+            PROXY_SKIPPED.append(bad)
+            return None
+    if "://" not in s:
+        parts = s.split(":")
+        if len(parts) == 4 and parts[1].isdigit():
+            # Hiddify/klipper style: host:port:user:pass
+            s = "http://" + parts[2] + ":" + parts[3] + "@" + parts[0] + ":" + parts[1]
+        else:
+            s = "http://" + s
+    low = s.lower()
+    if low.startswith("socks5h://"):
+        s = "socks5://" + s[10:]
+    elif low.startswith("socks://"):
+        s = "socks5://" + s[8:]
+    try:
+        p = httpx.URL(s)
+    except Exception:
+        logging.warning("proxy invalid: %s", mask_proxy(s))
+        return None
+    if p.scheme not in PROXY_SCHEMES or not p.host:
+        logging.warning("proxy skip: %s", mask_proxy(s))
+        return None
+    return str(p)
+
+
+def load_proxies():
+    """PROXIES env + PROXY_FILE, dedupe. /proxy reload isse dobara chalata hai."""
+    global PROXIES
+    raw = os.getenv("PROXIES", PROXIES_RAW)
+    items = [x for x in re.split(r"[\s,]+", raw or "") if x]
+    path = os.getenv("PROXY_FILE", PROXY_FILE)
+    if path:
+        fp = path if os.path.isabs(path) else os.path.join(HERE, path)
+        try:
+            with open(fp, encoding="utf-8", errors="ignore") as fh:
+                items += fh.read().splitlines()
+        except FileNotFoundError:
+            logging.warning("PROXY_FILE nahi mila: %s", fp)
+        except Exception:
+            logging.exception("PROXY_FILE")
+    out, seen = [], set()
+    for it in items:
+        u = norm_proxy(it)
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    PROXIES = out
+    if any(p.startswith("socks5://") for p in out) and not socks_ready():
+        logging.error("socks5 proxy hai lekin 'socksio' missing - "
+                      "pip install 'httpx[socks]'")
+    return PROXIES
+
+
+def socks_ready():
+    try:
+        __import__("socksio")
+        return True
+    except Exception:
+        return False
+
+
+def proxy_mode():
+    return PROXY_MODE if PROXY_MODE in ("rotate", "random") else "rotate"
+
+
+_AsyncBaseTransport = getattr(httpx, "AsyncBaseTransport", object)
+
+
+class RotatingProxy(_AsyncBaseTransport):
+    """Per-request proxy rotation.
+
+    Sirf connection-level errors (connect/proxy) pe next proxy try hota hai.
+    Read/write timeout pe retry nahi hota, warna same tweet do dafa post ho
+    sakta hai.
+    """
+
+    def __init__(self, proxies, mode="rotate"):
+        self.proxies = list(proxies)
+        self.mode = mode if mode in ("rotate", "random") else "rotate"
+        self.idx = 0
+        self.lock = asyncio.Lock()
+        self.pools = {}
+
+    async def _pick(self):
+        async with self.lock:
+            if self.mode == "random":
+                return random.choice(self.proxies)
+            p = self.proxies[self.idx % len(self.proxies)]
+            self.idx += 1
+            return p
+
+    def _pool(self, proxy):
+        tr = self.pools.get(proxy)
+        if tr is None:
+            tr = httpx.AsyncHTTPTransport(
+                proxy=proxy, retries=0,
+                limits=httpx.Limits(max_connections=max(CONCURRENCY * 2, 10),
+                                    max_keepalive_connections=max(CONCURRENCY, 10)))
+            self.pools[proxy] = tr
+        return tr
+
+    async def handle_async_request(self, request):
+        last = None
+        for _ in range(min(len(self.proxies), 3)):
+            proxy = await self._pick()
+            try:
+                return await self._pool(proxy).handle_async_request(request)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as e:
+                last = e
+                logging.warning("proxy fail %s: %s", mask_proxy(proxy), type(e).__name__)
+            except ImportError as e:
+                last = httpx.ProxyError("proxy " + mask_proxy(proxy) + ": " + str(e))
+                logging.error("proxy import fail %s: %s", mask_proxy(proxy), e)
+        if last is not None:
+            raise last
+        raise httpx.ProxyError("koi proxy configured nahi")
+
+    async def aclose(self):
+        for tr in list(self.pools.values()):
+            try:
+                await tr.aclose()
+            except Exception:
+                pass
+        self.pools.clear()
+
+
+def proxy_mounts():
+    """X hosts ke liye rotating transport, baaki traffic direct."""
+    if not PROXIES:
+        return None
+    tr = RotatingProxy(PROXIES, proxy_mode())
+    mounts = {}
+    for host in PROXY_HOSTS:
+        mounts["https://" + host] = tr
+        mounts["http://" + host] = tr
+    return mounts
+
+
+def proxy_status_text():
+    if not PROXIES:
+        txt = "Proxy: OFF (PROXIES khaali)"
+        if PROXY_SKIPPED:
+            txt += "\nskipped: " + ", ".join(sorted(set(PROXY_SKIPPED))) + "://"
+            txt += "\n(vless/vmess/ss httpx nahi chalata - xray/sing-box se socks5 banao)"
+        return txt
+    lines = ["Proxy: ON (" + str(len(PROXIES)) + ") | mode " + proxy_mode(),
+             "X traffic only | Telegram + Supabase direct"]
+    if any(p.startswith("socks5://") for p in PROXIES) and not socks_ready():
+        lines.append("! socksio missing: pip install 'httpx[socks]'")
+    if PROXY_SKIPPED:
+        lines.append("skipped: " + ", ".join(sorted(set(PROXY_SKIPPED))) + "://")
+    lines += [str(i + 1) + ". " + mask_proxy(p) for i, p in enumerate(PROXIES[:40])]
+    return "\n".join(lines)
+
+
+async def probe_proxy(proxy):
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(15.0),
+                                     follow_redirects=False, trust_env=False) as cl:
+            r = await cl.get(PROXY_TEST_URL, headers={"User-Agent": UA})
+    except Exception as e:
+        return {"proxy": proxy, "ok": False, "why": type(e).__name__,
+                "ms": int((time.time() - t0) * 1000)}
+    ms = int((time.time() - t0) * 1000)
+    ok = r.status_code < 500
+    return {"proxy": proxy, "ok": ok, "code": r.status_code, "ms": ms}
+
+
 # ============================ WORKERS ============================
 def http_client():
-    return httpx.AsyncClient(
+    kw = dict(
         follow_redirects=True,
         timeout=httpx.Timeout(TIMEOUT, connect=min(15.0, TIMEOUT)),
         limits=httpx.Limits(max_connections=max(CONCURRENCY * 2, 10),
                             max_keepalive_connections=max(CONCURRENCY, 10)))
+    mounts = proxy_mounts()
+    if mounts:
+        kw["mounts"] = mounts
+        # PROXIES hi source of truth; HTTP(S)_PROXY env ignore karo
+        kw["trust_env"] = False
+    return httpx.AsyncClient(**kw)
 
 
 async def pmap(fn, items, conc=None):
@@ -2713,7 +2936,9 @@ CMD_PAGES = [
  ("10. Cleanup / admin", (
   "/delbatches\nSaved batches.\n/delbatch <id>\nTweets delete.\n/broadcast <text>\nSab users ko.\n"
   "/countrytest\nEk cookie .txt — country + username batata hai.\n\n"
-  "Admin: /split /splitoff /extract /camp /stopcamp /db /delbatches /delbatch /broadcast /countrytest")),
+  "/proxy\nProxy status (masked).\n/proxy test\nHar proxy check (ok/fail + ms).\n"
+  "/proxy list\nMasked list.\n/proxy reload\nPROXY_FILE dobara padho.\n\n"
+  "Admin: /split /splitoff /extract /camp /stopcamp /db /delbatches /delbatch /broadcast /countrytest /proxy")),
  ("11. Errors", (
   "Jawab nahi de raha > /diag + Railway logs.\n"
   "DB off > SUPABASE_URL/KEY check, redeploy.\n"
@@ -2820,11 +3045,52 @@ async def status_cmd(u, c):
 async def diag_cmd(u, c):
     import platform
     import telegram
+    px = (str(len(PROXIES)) + " | " + proxy_mode()) if PROXIES else "OFF"
     await u.message.reply_text(
         "py " + platform.python_version() + " | ptb " + telegram.__version__ + "\n"
         "db " + ("ON" if db_enabled() else "OFF") + " | table " + DB_TABLE + "\n"
         "reverify " + str(REVERIFY_HOURS) + "h | batch " + str(REVERIFY_BATCH)
-        + " | dead_after " + str(DEAD_AFTER) + "\nadmin " + str(is_admin(u.effective_user.id)))
+        + " | dead_after " + str(DEAD_AFTER) + "\n"
+        "proxy " + px + "\nadmin " + str(is_admin(u.effective_user.id)))
+
+
+async def proxy_cmd(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("Sirf admin.")
+        return
+    a = c.args[0].lower() if c.args else ""
+    if a == "reload":
+        n = len(load_proxies())
+        await u.message.reply_text("Proxy reload: " + str(n) + " configured\n"
+                                   + proxy_status_text())
+        return
+    if a == "list":
+        await u.message.reply_text(proxy_status_text())
+        return
+    if a == "test":
+        if not PROXIES:
+            await u.message.reply_text(proxy_status_text())
+            return
+        msg = await u.message.reply_text("Proxy test (" + str(len(PROXIES)) + ")...")
+        res = await pmap(probe_proxy, PROXIES, 4)
+        good = [r for r in res if r and r["ok"]]
+        lines = []
+        for r in res:
+            if not r:
+                lines.append("? failed")
+                continue
+            lines.append(mask_proxy(r["proxy"]) + " | "
+                         + ("ok" if r["ok"] else "fail")
+                         + (" " + str(r["code"]) if r.get("code") else "")
+                         + (" " + r["why"] if r.get("why") else "")
+                         + " " + str(r["ms"]) + "ms")
+        await _edit(msg, "Proxy test: ok " + str(len(good)) + "/" + str(len(PROXIES))
+                    + "\n" + "\n".join(lines[:40]))
+        return
+    await u.message.reply_text(
+        proxy_status_text()
+        + "\n\n/proxy test - har proxy check\n/proxy list - masked list"
+          "\n/proxy reload - PROXY_FILE dobara padho")
 
 
 async def mode_cmd(u, c):
@@ -4090,6 +4356,11 @@ def main():
         return
     os.makedirs(STATE_DIR, exist_ok=True)
     load_store()
+    load_proxies()
+    if PROXIES:
+        logging.info("Proxy: %s configured (%s)", len(PROXIES), proxy_mode())
+    else:
+        logging.info("Proxy: OFF (direct)")
     os.makedirs(CAMP_MEDIA_DIR, exist_ok=True)
     if not db_enabled():
         logging.warning("SUPABASE_URL/KEY missing - DB features off")
@@ -4097,7 +4368,8 @@ def main():
            .post_init(post_init).post_shutdown(post_shutdown).build())
     handlers = [
         ("start", start), ("help", help_cmd), ("commands", commands_cmd),
-        ("status", status_cmd), ("diag", diag_cmd), ("store", store_cmd),
+        ("status", status_cmd), ("diag", diag_cmd), ("proxy", proxy_cmd),
+        ("store", store_cmd),
         ("mode", mode_cmd), ("verify", verify_cmd), ("live", live_cmd),
         ("takeover", takeover_cmd), ("newpass", newpass_cmd), ("newemail", newemail_cmd),
         ("finalize", finalize_cmd), ("cancel", cancel_cmd),
@@ -4119,7 +4391,8 @@ def main():
         on_doc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
-    logging.info("Bot chalu | db=%s", db_enabled())
+    logging.info("Bot chalu | db=%s | proxy=%s", db_enabled(),
+                 (str(len(PROXIES)) if PROXIES else "off"))
     app.run_polling(drop_pending_updates=True)
 
 
