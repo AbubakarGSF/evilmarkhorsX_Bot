@@ -1075,7 +1075,8 @@ async def x_route_check(ttl=300):
 def route_fail_text(why):
     return ("X tak request nahi pohanch rahi: " + (why or "unknown") + "\n"
             "Isliye koi account verify nahi hua - ye suspension nahi hai.\n"
-            "/netcheck chalao. Proxy galat hai to /proxy off se direct try karo.")
+            "/netcheck chalao. Proxy galat hai to /proxy off se direct try karo "
+            "(direct theek ho to 20-30 accounts ki chhoti zip se test karo).")
 
 
 def db_row_from(data, ck, uid):
@@ -2738,13 +2739,18 @@ def _proxy_tips(res):
         tips.append("407 = proxy auth chahiye (user:pass@host:port)")
     if any("SSL" in (r.get("why") or "") for r in bad):
         tips.append("SSL error = https:// ki jagah http:// try karo")
-    if any((r.get("why") or "") in ("ConnectError", "ConnectTimeout") for r in bad):
+    if any((r.get("why") or "").startswith(("ConnectError", "ConnectTimeout"))
+           for r in bad):
         tips.append("connect fail = host/port galat ya proxy down")
     if any(r.get("code") in (403, 429) for r in bad):
         tips.append("403/429 = proxy IP X se blocked/limited")
     if any("non-json" in (r.get("why") or "") for r in bad):
         tips.append("non-json/block = proxy X tak pohanch raha hai lekin "
                     "Cloudflare/block page aa raha hai (IP flagged)")
+    if any(("404" in (r.get("why") or "")) or ("307" in (r.get("why") or ""))
+           for r in bad):
+        tips.append("404/307 = ye HTTP proxy nahi hai, panel/subscription URL "
+                    "lagta hai (3x-ui sub port 2096?). CONNECT accept nahi hua.")
     return ("\n\ntips:\n- " + "\n- ".join(tips)) if tips else ""
 
 
@@ -2755,7 +2761,12 @@ async def probe_proxy(proxy):
                                      follow_redirects=False, trust_env=False) as cl:
             r = await cl.get(PROXY_TEST_URL, headers={"User-Agent": UA})
     except Exception as e:
-        return {"proxy": proxy, "ok": False, "why": type(e).__name__,
+        why = type(e).__name__
+        detail = " ".join(str(e).split())[:40]
+        if detail:
+            why += ": " + detail
+        net_note("proxy " + mask_proxy(proxy) + " " + why)
+        return {"proxy": proxy, "ok": False, "why": why,
                 "ms": int((time.time() - t0) * 1000)}
     ms = int((time.time() - t0) * 1000)
     # 407 = proxy auth chahiye, ye usable nahi. 401/403 X ka jawab ho sakta
@@ -3520,7 +3531,12 @@ async def netcheck_one(label, url, headers=None, proxy=None, want_json=False):
         async with httpx.AsyncClient(**kw) as cl:
             r = await cl.get(url, headers=headers or {"User-Agent": UA})
     except Exception as e:
-        return label + ": FAIL " + type(e).__name__, False, 0
+        why = type(e).__name__
+        detail = " ".join(str(e).split())[:40]
+        if detail:
+            why += ": " + detail
+        net_note(label + " " + why)
+        return label + ": FAIL " + why, False, 0
     ms = int((time.time() - t0) * 1000)
     txt = label + ": HTTP " + str(r.status_code) + " " + str(ms) + "ms"
     ok = True
@@ -3570,8 +3586,18 @@ async def netcheck_report(proxy_limit=10):
     if use_proxy and proxy_ok and proxy_fail:
         verdict = "Kuch proxies fail hain - sirf working wale rakho."
     elif use_proxy and not proxy_ok:
-        verdict = ("Sab proxies X tak nahi pohanch rahe. Path-auth/vless link "
-                   "httpx proxy nahi hai; http://user:pass@host:port ya socks5 chahiye.")
+        whys = " ".join((r.get("why") or "") for r in res if r)
+        verdict = "Sab proxies X tak nahi pohanch rahe."
+        if "404" in whys or "307" in whys:
+            verdict += ("\n404/307 = ye proxy endpoint nahi, panel/subscription URL hai."
+                        "\nProvider se host:port:user:pass lo, ya xray/sing-box se "
+                        "socks5://127.0.0.1:1080 banao.")
+        else:
+            verdict += ("\nPath-auth/vless link httpx proxy nahi hai; "
+                        "http://user:pass@host:port ya socks5 chahiye.")
+        if PROXY_HINT:
+            verdict += ("\nPath wali link mili thi (" + ", ".join(sorted(PROXY_HINT)[:2])
+                        + "): path strip ho jata hai, isliye auth fail hota hai.")
     elif use_proxy and proxy_ok and not direct_ok:
         verdict = "Proxy theek hai, direct block hai - proxy ON rakho."
     elif not use_proxy and direct_ok:
