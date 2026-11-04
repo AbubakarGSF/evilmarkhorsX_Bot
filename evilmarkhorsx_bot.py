@@ -3319,7 +3319,7 @@ CMD_PAGES = [
   "/tweetcancel\n\nHar account pe random variant, prefix/suffix, hashtag shuffle, thread chain.")),
  ("10. Cleanup / admin", (
   "/delbatches\nSaved batches.\n/delbatch <id>\nTweets delete.\n/broadcast <text>\nSab users ko.\n"
-  "/countrytest\nEk cookie .txt — country + username batata hai.\n\n"
+  "/countrytest\nEk cookie .txt - status + reason + country + username batata hai (suspend check ke liye).\n\n"
   "/proxy\nProxy status (masked).\n/proxy test\nHar proxy check (ok/fail + ms).\n"
   "/proxy list\nMasked list.\n/proxy reload\nPROXY_FILE dobara padho.\n/proxy off|on\nIs run ke liye proxy band/chalu (deploy ke baghair test).\n\n"
   "/netcheck\nX direct + proxies + Supabase, ek hi jagah.\n\n"
@@ -4256,9 +4256,13 @@ async def country_test(u, doc):
             await u.message.reply_text("Cookie lines nahi mili.")
             return
         async with http_client() as client:
-            cc = await detect_country(client, cookie_dict(cookies))
-        await u.message.reply_text("Country: " + (cc or "(nahi mila)")
-                                   + "\nuser: " + str(data.get("Username", "")))
+            ld = await live_check(client, cookie_dict(cookies))
+        txt = ("Status: " + str(ld.get("Status") or "UNKNOWN")
+               + "\nCountry: " + str(ld.get("Country") or "(nahi mila)")
+               + "\nuser: " + str(ld.get("Username") or data.get("Username", "")))
+        if ld.get("Reason"):
+            txt += "\nreason: " + str(ld.get("Reason"))
+        await u.message.reply_text(txt)
     except Exception as e:
         await u.message.reply_text("Error: " + str(e))
     finally:
