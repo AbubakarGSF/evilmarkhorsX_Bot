@@ -82,6 +82,9 @@ PROXY_TYPE = os.getenv("PROXY_TYPE", "").strip().lower()
 PROXY_TEST_URL = os.getenv(
     "PROXY_TEST_URL",
     "https://api.x.com/1.1/account/verify_credentials.json")
+# Ek proxy probe ka hard cap. SOCKS handshake httpx timeout ignore kar sakta
+# hai, isliye wait_for se band karte hain (warna test 90s+ atak jata hai).
+PROXY_PROBE_TIMEOUT = 20.0
 PROXY_HOSTS = ("api.x.com", "upload.x.com", "api.twitter.com",
                "upload.twitter.com", "x.com", "twitter.com")
 # Deploy ke baad admins ko ek netcheck summary bhejein (0 = off).
@@ -280,7 +283,8 @@ FILES = {
                   "Proxies: `PROXIES=http://u:p@host:port,socks5://host:port` (X traffic\n"
                   "only, http/https/socks5/socks5h; provider `host:port:user:pass` +\n"
                   "`PROXY_TYPE=socks5`; vless/vmess/ss links need xray/sing-box).\n"
-                  "`/proxy add` se runtime proxy volume par save karo, `/proxy test` se check.\n\n"
+                  "`/proxy add [auto|type]` se runtime proxy volume par save karo,\n"
+                  "`/proxy detect` se SOCKS5/HTTP type khud check karo.\n\n"
                   "State (`users.json`, `batch_*.json`, `camp_*.json`, `del_data/`, "
                   "`camp_media/`) lives in the directory of `STORE_PATH` - point it at "
                   "a Railway volume so it survives redeploys.\n"),
@@ -2885,15 +2889,29 @@ def _proxy_tips(res):
            for r in bad):
         tips.append("404/307 = ye HTTP proxy nahi hai, panel/subscription URL "
                     "lagta hai (3x-ui sub port 2096?). CONNECT accept nahi hua.")
+    if any(("ProtocolError" in (r.get("why") or ""))
+           or ("Malformed reply" in (r.get("why") or "")) for r in bad):
+        tips.append("ProtocolError/Malformed reply = is port par SOCKS5 nahi "
+                    "bol raha (HTTP proxy ho sakta hai). /proxy detect <entry> "
+                    "chalao, ya /proxy add http ... try karo.")
     return ("\n\ntips:\n- " + "\n- ".join(tips)) if tips else ""
 
 
-async def probe_proxy(proxy):
+async def probe_proxy(proxy, timeout=None):
     t0 = time.time()
+    tmo = float(timeout or PROXY_PROBE_TIMEOUT)
     try:
-        async with httpx.AsyncClient(proxy=proxy, timeout=httpx.Timeout(15.0),
-                                     follow_redirects=False, trust_env=False) as cl:
-            r = await cl.get(PROXY_TEST_URL, headers={"User-Agent": UA})
+        async with httpx.AsyncClient(proxy=proxy,
+                                     timeout=httpx.Timeout(min(15.0, tmo)),
+                                     follow_redirects=False,
+                                     trust_env=False) as cl:
+            r = await asyncio.wait_for(
+                cl.get(PROXY_TEST_URL, headers={"User-Agent": UA}), tmo)
+    except asyncio.TimeoutError:
+        why = "Timeout: " + str(int(tmo)) + "s (handshake atka)"
+        net_note("proxy " + mask_proxy(proxy) + " " + why)
+        return {"proxy": proxy, "ok": False, "why": why,
+                "ms": int((time.time() - t0) * 1000)}
     except Exception as e:
         why = type(e).__name__
         detail = " ".join(str(e).split())[:40]
@@ -2916,6 +2934,51 @@ async def probe_proxy(proxy):
             why = "non-json/block"
     return {"proxy": proxy, "ok": ok, "code": r.status_code, "why": why,
             "ms": ms}
+
+
+_PROXY_DETECT_SCHEMES = ("socks5", "http")
+
+
+def _strip_proxy_scheme(raw):
+    """Entry se scheme/marker hatao, taake dono protocols try ho sakein."""
+    s = (raw or "").strip()
+    m = re.match(r"^(socks5h|socks5|socks|https|http)\s*(:\/\/|\||:)\s*(.*)$",
+                 s, re.I)
+    return m.group(3).strip() if m and m.group(3) else s
+
+
+def mask_entry(raw):
+    """Raw provider entry ka safe naam (host:port + auth flag)."""
+    u = norm_proxy(raw)
+    if u:
+        return mask_proxy(u)
+    parts = _colon_proxy_parts(_strip_proxy_scheme(raw))
+    if parts:
+        return (_bracket_host(parts[0]) + ":" + parts[1]
+                + (" (auth)" if parts[2] or parts[3] else ""))
+    return "?"
+
+
+async def detect_proxy(raw):
+    """Ek entry ko SOCKS5 aur HTTP dono tarah probe karo.
+
+    Provider panel dono ka format same deta hai (ip:port:user:pass), sirf
+    protocol/port alag hota hai. Jis par JSON aaye wahi sahi type hai.
+    """
+    tail = _strip_proxy_scheme(raw)
+    out = []
+    for sch in _PROXY_DETECT_SCHEMES:
+        u = norm_proxy(tail, sch)
+        if not u:
+            out.append({"scheme": sch, "proxy": None, "ok": False,
+                        "why": "invalid entry"})
+            continue
+        r = probe_proxy(u)
+        if asyncio.iscoroutine(r):
+            r = await r
+        r["scheme"] = sch
+        out.append(r)
+    return out
 
 
 # ============================ WORKERS ============================
@@ -3478,7 +3541,8 @@ CMD_PAGES = [
   "/delbatches\nSaved batches.\n/delbatch <id>\nTweets delete.\n/broadcast <text>\nSab users ko.\n"
   "/countrytest\nEk cookie .txt - status + reason + country + username batata hai (suspend check ke liye).\n\n"
   "/proxy\nProxy status (masked).\n/proxy test\nHar proxy check (ok/fail + ms).\n"
-  "/proxy add [socks5|http] host:port:user:pass\nAdd + volume par save (IPv6 bhi).\n"
+  "/proxy add [auto|socks5|http] host:port:user:pass\nAdd + volume par save (IPv6 bhi). auto = type detect.\n"
+  "/proxy detect host:port:user:pass\nSOCKS5 vs HTTP khud check karo.\n"
   "/proxy clear\nRuntime proxies hatao.\n"
   "/proxy list\nMasked list.\n/proxy reload\nPROXY_FILE dobara padho.\n/proxy off|on\nIs run ke liye proxy band/chalu (deploy ke baghair test).\n\n"
   "/netcheck\nX direct + proxies + Supabase, ek hi jagah.\n\n"
@@ -3621,28 +3685,87 @@ async def proxy_cmd(u, c):
             load_proxies()
             await u.message.reply_text("Proxy ON\n" + proxy_status_text())
         return
+    if a == "detect":
+        entries = [x for x in re.split(r"[\s,]+", " ".join(c.args[1:])) if x]
+        if not entries:
+            await u.message.reply_text(
+                "Use: /proxy detect 45.144.31.82:PORT:USER:PASS\n"
+                "SOCKS5 aur HTTP dono try karega (format dono ka same hai).")
+            return
+        use = entries[:10]
+        msg = await u.message.reply_text(
+            "Detect (" + str(len(use)) + ")... SOCKS5 + HTTP try, "
+            "har entry 40s tak le sakti hai.")
+        lines = []
+        for e in use:
+            lines.append(mask_entry(e))
+            res = await detect_proxy(e)
+            good = [r for r in res if r.get("ok")]
+            for r in res:
+                if r.get("ok"):
+                    lines.append("  " + r["scheme"] + ": OK "
+                                 + str(r.get("code") or "") + " "
+                                 + str(r.get("ms", 0)) + "ms")
+                else:
+                    lines.append("  " + r["scheme"] + ": fail "
+                                 + str(r.get("why") or "?")[:70])
+            if len(good) == 1:
+                lines.append("  => type: " + good[0]["scheme"])
+            elif good:
+                lines.append("  => dono chal rahe hain ("
+                             + ", ".join(r["scheme"] for r in good) + ")")
+            else:
+                lines.append("  => koi protocol kaam nahi kiya "
+                             "(host/port/creds check karo)")
+        if len(entries) > len(use):
+            lines.append("+ " + str(len(entries) - len(use))
+                         + " skipped (max 10)")
+        await _edit(msg, "\n".join(lines[:80]))
+        return
     if a in ("add", "set"):
         rest = list(c.args[1:])
         kind = ""
-        if rest and rest[0].lower() in PROXY_SCHEMES + ("socks",):
-            kind = "socks5" if rest[0].lower() == "socks" else rest[0].lower()
+        if rest and rest[0].lower() in PROXY_SCHEMES + ("socks", "auto"):
+            kind = rest[0].lower()
+            if kind == "socks":
+                kind = "socks5"
             rest = rest[1:]
         entries = [x for x in re.split(r"[\s,]+", " ".join(rest)) if x]
         if not entries:
             await u.message.reply_text(
                 "Use:\n"
                 "/proxy add socks5 45.144.31.82:PORT:USER:PASS\n"
+                "/proxy add auto 45.144.31.82:PORT:USER:PASS  (detect type)\n"
                 "/proxy add socks5://USER:PASS@45.144.31.82:PORT\n"
                 "/proxy add socks5 [2001:db8::1]:PORT:USER:PASS\n"
                 "(type chhodo to PROXY_TYPE/default http lagega)")
             return
         good, bad = [], []
-        for e in entries:
-            n = norm_proxy(e, kind or None)
-            if n:
-                good.append(n)
-            else:
-                bad.append(e)
+        if kind == "auto":
+            use = entries[:10]
+            msg = await u.message.reply_text(
+                "Detect (" + str(len(use)) + ")... SOCKS5 + HTTP try...")
+            dlines = []
+            for e in use:
+                res = await detect_proxy(e)
+                ok = [r for r in res if r.get("ok")]
+                dlines.append(mask_entry(e) + " -> "
+                              + (ok[0]["scheme"] if ok else "fail"))
+                if ok:
+                    good.append(ok[0]["proxy"])
+                else:
+                    bad.append(e)
+            if len(entries) > len(use):
+                dlines.append("+ " + str(len(entries) - len(use))
+                              + " skipped (max 10)")
+            await _edit(msg, "\n".join(dlines))
+        else:
+            for e in entries:
+                n = norm_proxy(e, kind or None)
+                if n:
+                    good.append(n)
+                else:
+                    bad.append(e)
         if good:
             cur = runtime_proxy_lines()
             seen = set(cur) | set(PROXIES)
@@ -3712,7 +3835,8 @@ async def proxy_cmd(u, c):
     await u.message.reply_text(
         proxy_status_text()
         + "\n\n/proxy test - har proxy check\n/proxy list - masked list"
-          "\n/proxy add [type] host:port:user:pass - add + save (volume)"
+          "\n/proxy detect <entry> - SOCKS5 vs HTTP khud check karo"
+          "\n/proxy add [auto|type] host:port:user:pass - add + save (volume)"
           "\n/proxy clear - runtime proxies hatao"
           "\n/proxy reload - PROXY_FILE dobara padho"
           "\n/proxy off|on - is run ke liye proxy band/chalu")
@@ -3785,10 +3909,17 @@ async def netcheck_report(proxy_limit=10):
     elif use_proxy and not proxy_ok:
         whys = " ".join((r.get("why") or "") for r in res if r)
         verdict = "Sab proxies X tak nahi pohanch rahe."
-        if "404" in whys or "307" in whys:
+        if "ProtocolError" in whys or "Malformed reply" in whys:
+            verdict += ("\nProtocolError = protocol mismatch: is port par SOCKS5 "
+                        "nahi hai. /proxy detect <entry> chalao (HTTP bhi try "
+                        "karega), ya panel se HTTP list lo.")
+        elif "404" in whys or "307" in whys:
             verdict += ("\n404/307 = ye proxy endpoint nahi, panel/subscription URL hai."
                         "\nProvider ka host:port:user:pass /proxy add socks5 ... se daalo, "
                         "ya xray/sing-box se socks5://127.0.0.1:1080 banao.")
+        elif "Timeout" in whys:
+            verdict += ("\nTimeout = proxy handshake atak raha hai; port/protocol "
+                        "galat ya proxy down. /proxy detect <entry> try karo.")
         else:
             verdict += ("\nPath-auth/vless link httpx proxy nahi hai; "
                         "http://user:pass@host:port ya socks5 chahiye.")

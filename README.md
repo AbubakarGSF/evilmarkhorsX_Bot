@@ -174,14 +174,22 @@ Path-auth links are converted automatically: `https://host:port/user/pass`
 prints credentials in the path works as-is.
 
 Admin commands: `/proxy` (status, credentials masked), `/proxy test`
-(ok/fail + latency per proxy), `/proxy list`, `/proxy add [type] entry`
-(validate + save to `STATE_DIR/proxies.txt` on the volume), `/proxy clear`
-(remove saved runtime proxies), `/proxy reload` (re-read `PROXY_FILE` and the
-runtime file), `/proxy off|on` (disable/enable proxies for the current run
-without redeploying). `/diag` shows the proxy count and the last network
+(ok/fail + latency per proxy), `/proxy list`, `/proxy detect entry`
+(tries SOCKS5 and HTTP, tells you which protocol that host:port speaks),
+`/proxy add [auto|type] entry` (validate, optionally auto-detect, and save to
+`STATE_DIR/proxies.txt` on the volume), `/proxy clear` (remove saved runtime
+proxies), `/proxy reload` (re-read `PROXY_FILE` and the runtime file),
+`/proxy off|on` (disable/enable proxies for the current run without
+redeploying). `/diag` shows the proxy count and the last network
 error; `/netcheck` tests X direct, every proxy and Supabase in one go and
 prints a verdict. After each deploy the bot runs the same check once and
 sends the summary to `ADMIN_IDS`.
+
+A SOCKS5 probe that ends with `ProtocolError: Malformed reply` means the
+port is not speaking SOCKS5 (usually it is the HTTP endpoint). The provider
+format is the same for both, so run `/proxy detect host:port:user:pass` and
+add the type that returns JSON, or `/proxy add auto ...`. Timeouts are
+hard-capped at 20s so one bad proxy cannot stall the whole test.
 
 If every cookie comes back `unknown` with no `dead`, the cookies were never
 checked - X was not reachable through the configured route. `/netcheck`
