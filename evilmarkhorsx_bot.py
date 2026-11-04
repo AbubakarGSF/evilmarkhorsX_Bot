@@ -1940,6 +1940,12 @@ async def campaign_loop(u, cfg, accounts, prog, state, client, uid):
                 prog.done += 1
                 await prog.tick()
                 continue
+            if not rec.get("raw"):
+                # DB source ke paas raw file nahi hoti - retry/ folder ke liye
+                # cookies se file bana do, warna retry zip khali aati hai.
+                rec["raw"] = build_cookie_file(
+                    {"Status": "LIVE", "Username": acc.get("username") or rec["name"]},
+                    cookie_lines(ck))
             det = await asyncio.wait_for(live_check(client, ck), ACC_TIMEOUT)
             if det.get("Status") == "UNKNOWN":
                 state["failed"].append(dict(rec, cls="NET", why="verify unknown"))
@@ -4113,7 +4119,9 @@ async def on_store_cb(u, c):
     task = start_job(uid, "file", factory)
     if task is None:
         STORE_ASK[uid] = st
-        await q.edit_message_text("Pehle wala kaam chal raha hai. Thodi der baad try karo.")
+        # Buttons wapas dikhao, warna user ke paas dobara click karne ka
+        # koi tarika nahi bachta.
+        await ask_store(q.message, st)
 
 
 async def verify_with_store(u, uid, st, choice):
