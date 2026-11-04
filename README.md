@@ -48,6 +48,12 @@ hidden and `/db` reports that it is off.
 | split | `/split field country` + zip | buckets a cookie zip by a metadata field |
 | extract | `/extract country PK,IN year 2015-2020` + zip | keeps only matching accounts |
 
+Verification first runs a dummy read-only request through the configured route.
+If X is unreachable (proxy down, Cloudflare block page, DNS), the job stops
+immediately with the real reason instead of grinding through every account and
+returning `unknown`. `dead` with a reason is what suspension/lock looks like;
+`unknown` only means the check could not be completed.
+
 Commands: `/start /help /commands /status /diag /store /mode /verify /live
 /takeover /newpass /newemail /finalize /cancel /split /splitoff /extract
 /camp /stopcamp /report /db /broadcast /countrytest /tweet /tweetgo
@@ -123,7 +129,8 @@ stay direct.
 | `PROXIES` | comma/space separated list, e.g. `http://u:p@1.2.3.4:8080,socks5://5.6.7.8:1080` |
 | `PROXY_FILE` | path to a file with one proxy per line (`#` comments ok); can live on the volume |
 | `PROXY_MODE` | `rotate` (round robin, default) or `random` |
-| `PROXY_TEST_URL` | health-check URL, default `https://api.x.com/1.1/help.json` |
+| `PROXY_TEST_URL` | health-check URL, default `https://api.x.com/1.1/account/verify_credentials.json` |
+| `NETCHECK_ON_START` | send a one-time reachability summary to admins after deploy (default `1`) |
 
 Supported schemes are `http`, `https` and `socks5` (needs `httpx[socks]`,
 already in `requirements.txt`). Hiddify/xray share links (`vless://`,
@@ -150,7 +157,16 @@ prints credentials in the path works as-is.
 
 Admin commands: `/proxy` (status, credentials masked), `/proxy test`
 (ok/fail + latency per proxy), `/proxy list`, `/proxy reload` (re-read
-`PROXY_FILE`). `/diag` also shows the proxy count.
+`PROXY_FILE`), `/proxy off|on` (disable/enable proxies for the current run
+without redeploying). `/diag` shows the proxy count and the last network
+error; `/netcheck` tests X direct, every proxy and Supabase in one go and
+prints a verdict. After each deploy the bot runs the same check once and
+sends the summary to `ADMIN_IDS`.
+
+If every cookie comes back `unknown` with no `dead`, the cookies were never
+checked - X was not reachable through the configured route. `/netcheck`
+tells you whether direct or the proxies are the problem; suspension/lock
+always shows up as `dead` with a reason.
 
 With no `PROXIES` set the bot behaves exactly as before (direct).
 
