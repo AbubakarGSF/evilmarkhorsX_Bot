@@ -90,15 +90,24 @@ hard-stops the job; posted/partial ids are still saved for `/delbatch`.
 
 Long operations run as background tasks with one job per user
 (`JOBS` / `start_job` / `stop_job`), so the bot answers other commands
-while a zip is processing. `/cancel` cancels the running job and clears its
-batch. A janitor task expires stale store prompts every `JOB_REAP_MIN`
-minutes.
+while a zip is processing. `/cancel` cancels the running job, clears its
+batch and resets every per-user stage (store prompt, tweet media, split,
+extract, country test, campaign stage). A janitor task expires stale store
+prompts every `JOB_REAP_MIN` minutes, closes ULP clients whose code never
+arrived after `PEND_TTL_MIN` minutes, and drops stale country-test state.
 
 ## Limits
 
 - `ZIP_UPLOAD_MAX` (default 45 MB) - larger reports are rejected with a
   message instead of a failed upload.
 - `MAX_FILES` (default 5000) - accounts read from one zip.
+- `ZIP_MAX_FILE` (default 16 MB) - max uncompressed size of one entry.
+- `ZIP_MAX_TOTAL` (default 256 MB) - max total uncompressed size per zip,
+  so a zip bomb cannot exhaust memory.
+- `PEND_TTL_MIN` (default 180) - how long a login/e-mail code prompt stays
+  valid before the client is closed.
+- `CAMP_STAGE_SEC` (default 21600 = 6 h) - how long `/camp start` waits for
+  its cookie zip; after that a later zip is treated as a normal upload.
 - `CONCURRENCY` (default 8) - parallel HTTP workers for cookie/verify splits.
 - `DEAD_AFTER` (default 2) - failed checks before an account is marked dead.
 - `MEDIA_WAIT_MAX` (default 300 s) - how long the bot polls X while it

