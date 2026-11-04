@@ -2627,14 +2627,15 @@ def norm_proxy(raw, default_scheme=None):
             return None
 
     # Explicit scheme: scheme://, scheme| ya scheme: (provider panel style).
-    scheme, body = None, s
-    m = re.match(r"^(socks5h|socks5|socks|https|http)\s*(?::\/\/|\||:)\s*(.*)$",
+    scheme, sep, body = None, "", s
+    m = re.match(r"^(socks5h|socks5|socks|https|http)\s*(:\/\/|\||:)\s*(.*)$",
                  s, re.I)
-    if m and m.group(2):
+    if m and m.group(3):
         scheme = m.group(1).lower()
         if scheme == "socks":
             scheme = "socks5"
-        body = m.group(2)
+        sep, body = m.group(2), m.group(3)
+    explicit_scheme = scheme is not None
     if scheme is None:
         scheme = (default_scheme or _default_proxy_scheme()).lower()
         if scheme not in PROXY_SCHEMES:
@@ -2643,18 +2644,30 @@ def norm_proxy(raw, default_scheme=None):
     if "@" in body or "/" in body:
         # Standard URL ya provider ka path-auth style (httpx khud parse kare).
         s = scheme + "://" + body
+    elif sep == "://" and "::" in body and not body.startswith("["):
+        # socks5://2001:db8::1:1080 ambiguous hai - brackets zaroori.
+        logging.warning("proxy invalid: IPv6 host ko [] mein likho: %s",
+                        mask_proxy(s))
+        return None
     else:
         parts = _colon_proxy_parts(body)
         if not parts:
-            logging.warning("proxy invalid (host:port chahiye): %s",
-                            mask_proxy(s))
-            return None
-        host, port, user, pwd = parts
-        auth = ""
-        if user or pwd:
-            auth = (quote(unquote(user), safe="") + ":"
-                    + quote(unquote(pwd), safe="") + "@")
-        s = scheme + "://" + auth + _bracket_host(host) + ":" + port
+            # Explicit scheme ke saath bare host OK (default port: 80/443/1080).
+            bare = re.match(r"^[A-Za-z0-9._-]+$", body)
+            bare_v6 = body.startswith("[") and body.endswith("]") and ":" in body
+            if explicit_scheme and (bare or bare_v6):
+                s = scheme + "://" + body
+            else:
+                logging.warning("proxy invalid (host:port chahiye): %s",
+                                mask_proxy(s))
+                return None
+        else:
+            host, port, user, pwd = parts
+            auth = ""
+            if user or pwd:
+                auth = (quote(unquote(user), safe="") + ":"
+                        + quote(unquote(pwd), safe="") + "@")
+            s = scheme + "://" + auth + _bracket_host(host) + ":" + port
     try:
         p = httpx.URL(s)
     except Exception:
