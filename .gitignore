@@ -5,6 +5,7 @@ __pycache__/
 # secrets + local state
 .env
 users.json
+proxies.txt
 camp_*.json
 batch_*.json
 

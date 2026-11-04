@@ -78,6 +78,7 @@ CAMP_STAGE_SEC = int(os.getenv("CAMP_STAGE_SEC", str(6 * 3600)))
 PROXIES_RAW = os.getenv("PROXIES", "")
 PROXY_FILE = os.getenv("PROXY_FILE", "").strip()
 PROXY_MODE = os.getenv("PROXY_MODE", "rotate").strip().lower()
+PROXY_TYPE = os.getenv("PROXY_TYPE", "").strip().lower()
 PROXY_TEST_URL = os.getenv(
     "PROXY_TEST_URL",
     "https://api.x.com/1.1/account/verify_credentials.json")
@@ -256,7 +257,9 @@ FILES = {
                      "DB_TABLE=accounts\nREVERIFY_HOURS=24\nREVERIFY_BATCH=400\n"
                      "REVERIFY_CONC=4\nDEAD_AFTER=2\n"
                      "# proxies (X traffic only). HTTP/SOCKS5 endpoints, not vless://\n"
-                     "PROXIES=\nPROXY_FILE=\nPROXY_MODE=rotate\n"
+                     "# formats: http://u:p@1.2.3.4:8080  socks5://u:p@host:1080\n"
+                     "#          socks5|host:port:user:pass  [2001:db8::1]:1080:user:pass\n"
+                     "PROXIES=\nPROXY_FILE=\nPROXY_MODE=rotate\nPROXY_TYPE=http\n"
                      "PROXY_TEST_URL=https://api.x.com/1.1/account/verify_credentials.json\n"
                      "NETCHECK_ON_START=1\n"),
     "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\n"
@@ -275,8 +278,9 @@ FILES = {
                   "`/split`, `/extract`.\n"
                   "Admin: `/camp` campaigns, `/db` Supabase, `/tweet`, `/delbatch`.\n\n"
                   "Proxies: `PROXIES=http://u:p@host:port,socks5://host:port` (X traffic\n"
-                  "only, http/https/socks5; vless/vmess/ss links need xray/sing-box).\n"
-                  "`/proxy test` se check karo.\n\n"
+                  "only, http/https/socks5/socks5h; provider `host:port:user:pass` +\n"
+                  "`PROXY_TYPE=socks5`; vless/vmess/ss links need xray/sing-box).\n"
+                  "`/proxy add` se runtime proxy volume par save karo, `/proxy test` se check.\n\n"
                   "State (`users.json`, `batch_*.json`, `camp_*.json`, `del_data/`, "
                   "`camp_media/`) lives in the directory of `STORE_PATH` - point it at "
                   "a Railway volume so it survives redeploys.\n"),
@@ -2522,16 +2526,71 @@ async def reverify_loop(app):
 # PROXIES="http://u:p@1.2.3.4:8080, socks5://5.6.7.8:1080"
 # PROXY_FILE=/data/proxies.txt  (ek line = ek proxy, # comment)
 # PROXY_MODE=rotate|random
+# PROXY_TYPE=http|https|socks5|socks5h  (scheme-less lines ke liye, default http)
 # Sirf X hosts proxy se jaate hain; Telegram aur Supabase direct.
-PROXY_SCHEMES = ("http", "https", "socks5")
+PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
 PROXY_UNSUPPORTED = ("vless", "vmess", "trojan", "ss", "shadowsocks",
                      "hysteria", "hysteria2", "tuic", "wireguard", "wg",
                      "ssh", "ftp")
 PROXIES = []
 PROXY_SKIPPED = []
 PROXY_HINT = set()
+# /proxy add se bane proxies volume par yahan save hote hain.
+RUNTIME_PROXY_FILE = os.path.join(STATE_DIR, "proxies.txt")
 # Runtime switch: /proxy off se proxies band (deploy ke baghair test ke liye).
 PROXY_DISABLED = False
+
+
+def _default_proxy_scheme():
+    """PROXY_TYPE env, warna http. Sirf scheme-less entries par lagta hai."""
+    t = os.getenv("PROXY_TYPE", PROXY_TYPE).strip().lower()
+    return t if t in PROXY_SCHEMES else "http"
+
+
+def _bracket_host(host):
+    """IPv6 host ko URL ke liye [] mein lapeto (httpx.URL iske baghair fail)."""
+    host = (host or "").strip()
+    if ":" in host and not host.startswith("["):
+        return "[" + host + "]"
+    return host
+
+
+def _colon_proxy_parts(s):
+    """host:port[:user[:pass]] parse karo, IPv6 brackets optional.
+
+    (host, port, user, password) ya None. Bracket ke baghair IPv6 ko right se
+    toda jata hai: 2001:db8::1:1080:user:pass.
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    creds = []
+    if s.startswith("["):
+        m = re.match(r"^\[([^\]]+)\]:(.*)$", s)
+        if not m:
+            return None
+        host, bits = m.group(1), m.group(2).split(":")
+        if not bits or not bits[0].isdigit():
+            return None
+        port, creds = bits[0], bits[1:]
+    else:
+        bits = s.split(":")
+        if len(bits) in (2, 3, 4) and bits[1].isdigit():
+            host, port, creds = bits[0], bits[1], bits[2:]
+        elif len(bits) >= 4 and bits[-3].isdigit():
+            # Unbracketed IPv6: host:port:user:pass
+            host, port, creds = ":".join(bits[:-3]), bits[-3], bits[-2:]
+        elif (len(bits) >= 3 and bits[-1].isdigit()
+              and ":".join(bits[:-1]).count(":") >= 2):
+            # Unbracketed IPv6: host:port
+            host, port = ":".join(bits[:-1]), bits[-1]
+        else:
+            return None
+    if not host or not port.isdigit() or not (0 < int(port) < 65536):
+        return None
+    return (host, port,
+            creds[0] if len(creds) >= 1 else "",
+            creds[1] if len(creds) >= 2 else "")
 
 
 def mask_proxy(url):
@@ -2542,12 +2601,20 @@ def mask_proxy(url):
         return "?"
     auth = "***@" if (p.username or p.password) else ""
     port = ":" + str(p.port) if p.port else ""
-    return (p.scheme or "http") + "://" + auth + (p.host or "?") + port
+    return (p.scheme or "http") + "://" + auth + _bracket_host(p.host or "?") + port
 
 
-def norm_proxy(raw):
-    """Ek proxy line ko httpx-compatible URL banao, ya None."""
-    s = (raw or "").strip().strip('"').strip("'")
+def norm_proxy(raw, default_scheme=None):
+    """Ek proxy line ko httpx-compatible URL banao, ya None.
+
+    Formats:
+      scheme://[user:pass@]host:port
+      socks5|host:port:user:pass        (pipe marker)
+      socks5:host:port:user:pass        (colon marker)
+      host:port:user:pass               (PROXY_TYPE / default scheme)
+      [2001:db8::1]:1080:user:pass      (IPv6, brackets optional)
+    """
+    s = (raw or "").strip().strip('"').strip("'").strip()
     if not s or s.startswith("#"):
         return None
     low = s.lower()
@@ -2558,18 +2625,36 @@ def norm_proxy(raw):
             logging.warning("proxy skip: %s:// httpx support nahi karta", bad)
             PROXY_SKIPPED.append(bad)
             return None
-    if "://" not in s:
-        parts = s.split(":")
-        if len(parts) == 4 and parts[1].isdigit():
-            # Hiddify/klipper style: host:port:user:pass
-            s = "http://" + parts[2] + ":" + parts[3] + "@" + parts[0] + ":" + parts[1]
-        else:
-            s = "http://" + s
-    low = s.lower()
-    if low.startswith("socks5h://"):
-        s = "socks5://" + s[10:]
-    elif low.startswith("socks://"):
-        s = "socks5://" + s[8:]
+
+    # Explicit scheme: scheme://, scheme| ya scheme: (provider panel style).
+    scheme, body = None, s
+    m = re.match(r"^(socks5h|socks5|socks|https|http)\s*(?::\/\/|\||:)\s*(.*)$",
+                 s, re.I)
+    if m and m.group(2):
+        scheme = m.group(1).lower()
+        if scheme == "socks":
+            scheme = "socks5"
+        body = m.group(2)
+    if scheme is None:
+        scheme = (default_scheme or _default_proxy_scheme()).lower()
+        if scheme not in PROXY_SCHEMES:
+            scheme = "http"
+
+    if "@" in body or "/" in body:
+        # Standard URL ya provider ka path-auth style (httpx khud parse kare).
+        s = scheme + "://" + body
+    else:
+        parts = _colon_proxy_parts(body)
+        if not parts:
+            logging.warning("proxy invalid (host:port chahiye): %s",
+                            mask_proxy(s))
+            return None
+        host, port, user, pwd = parts
+        auth = ""
+        if user or pwd:
+            auth = (quote(unquote(user), safe="") + ":"
+                    + quote(unquote(pwd), safe="") + "@")
+        s = scheme + "://" + auth + _bracket_host(host) + ":" + port
     try:
         p = httpx.URL(s)
     except Exception:
@@ -2586,7 +2671,7 @@ def norm_proxy(raw):
         if len(segs) == 2:
             auth = quote(unquote(segs[0]), safe="") + ":" + quote(unquote(segs[1]), safe="")
             port = ":" + str(p.port) if p.port else ""
-            out = p.scheme + "://" + auth + "@" + p.host + port
+            out = p.scheme + "://" + auth + "@" + _bracket_host(p.host) + port
             logging.info("proxy auth path se liya: %s", mask_proxy(out))
             return out
         # https://host:port/token jaisi link: path httpx ignore karta hai.
@@ -2597,18 +2682,24 @@ def norm_proxy(raw):
 
 
 def load_proxies():
-    """PROXIES env + PROXY_FILE, dedupe. /proxy reload isse dobara chalata hai."""
+    """PROXIES env + PROXY_FILE + /proxy add file, dedupe.
+
+    /proxy reload isse dobara chalata hai.
+    """
     global PROXIES
     raw = os.getenv("PROXIES", PROXIES_RAW)
     items = [x for x in re.split(r"[\s,]+", raw or "") if x]
-    path = os.getenv("PROXY_FILE", PROXY_FILE)
-    if path:
+    env_file = os.getenv("PROXY_FILE", PROXY_FILE)
+    for path in (env_file, RUNTIME_PROXY_FILE):
+        if not path:
+            continue
         fp = path if os.path.isabs(path) else os.path.join(HERE, path)
         try:
             with open(fp, encoding="utf-8", errors="ignore") as fh:
                 items += fh.read().splitlines()
         except FileNotFoundError:
-            logging.warning("PROXY_FILE nahi mila: %s", fp)
+            if path != RUNTIME_PROXY_FILE:
+                logging.warning("PROXY_FILE nahi mila: %s", fp)
         except Exception:
             logging.exception("PROXY_FILE")
     out, seen = [], set()
@@ -2618,7 +2709,7 @@ def load_proxies():
             seen.add(u)
             out.append(u)
     PROXIES = out
-    if any(p.startswith("socks5://") for p in out) and not socks_ready():
+    if any(p.startswith("socks5") for p in out) and not socks_ready():
         logging.error("socks5 proxy hai lekin 'socksio' missing - "
                       "pip install 'httpx[socks]'")
     return PROXIES
@@ -2629,6 +2720,36 @@ def socks_ready():
         __import__("socksio")
         return True
     except Exception:
+        return False
+
+
+def runtime_proxy_lines():
+    """/proxy add se save ki hui lines (masked nahi - file local/volume par)."""
+    try:
+        with open(RUNTIME_PROXY_FILE, encoding="utf-8", errors="ignore") as fh:
+            return [x.strip() for x in fh.read().splitlines()
+                    if x.strip() and not x.strip().startswith("#")]
+    except FileNotFoundError:
+        return []
+    except Exception:
+        logging.exception("runtime proxies read")
+        return []
+
+
+def save_runtime_proxy_lines(lines):
+    """Runtime proxies ko volume par likho, 0600 permissions ke saath."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(RUNTIME_PROXY_FILE, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines).strip()
+                     + ("\n" if lines else ""))
+        try:
+            os.chmod(RUNTIME_PROXY_FILE, 0o600)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        logging.exception("runtime proxies save")
         return False
 
 
@@ -2721,7 +2842,7 @@ def proxy_status_text():
         return txt
     lines = ["Proxy: ON (" + str(len(PROXIES)) + ") | mode " + proxy_mode(),
              "X traffic only | Telegram + Supabase direct"]
-    if any(p.startswith("socks5://") for p in PROXIES) and not socks_ready():
+    if any(p.startswith("socks5") for p in PROXIES) and not socks_ready():
         lines.append("! socksio missing: pip install 'httpx[socks]'")
     if PROXY_SKIPPED:
         lines.append("skipped: " + ", ".join(sorted(set(PROXY_SKIPPED))) + "://")
@@ -3344,6 +3465,8 @@ CMD_PAGES = [
   "/delbatches\nSaved batches.\n/delbatch <id>\nTweets delete.\n/broadcast <text>\nSab users ko.\n"
   "/countrytest\nEk cookie .txt - status + reason + country + username batata hai (suspend check ke liye).\n\n"
   "/proxy\nProxy status (masked).\n/proxy test\nHar proxy check (ok/fail + ms).\n"
+  "/proxy add [socks5|http] host:port:user:pass\nAdd + volume par save (IPv6 bhi).\n"
+  "/proxy clear\nRuntime proxies hatao.\n"
   "/proxy list\nMasked list.\n/proxy reload\nPROXY_FILE dobara padho.\n/proxy off|on\nIs run ke liye proxy band/chalu (deploy ke baghair test).\n\n"
   "/netcheck\nX direct + proxies + Supabase, ek hi jagah.\n\n"
   "Admin: /split /splitoff /extract /camp /stopcamp /db /delbatches /delbatch /broadcast /countrytest /proxy /netcheck")),
@@ -3485,6 +3608,65 @@ async def proxy_cmd(u, c):
             load_proxies()
             await u.message.reply_text("Proxy ON\n" + proxy_status_text())
         return
+    if a in ("add", "set"):
+        rest = list(c.args[1:])
+        kind = ""
+        if rest and rest[0].lower() in PROXY_SCHEMES + ("socks",):
+            kind = "socks5" if rest[0].lower() == "socks" else rest[0].lower()
+            rest = rest[1:]
+        entries = [x for x in re.split(r"[\s,]+", " ".join(rest)) if x]
+        if not entries:
+            await u.message.reply_text(
+                "Use:\n"
+                "/proxy add socks5 45.144.31.82:PORT:USER:PASS\n"
+                "/proxy add socks5://USER:PASS@45.144.31.82:PORT\n"
+                "/proxy add socks5 [2001:db8::1]:PORT:USER:PASS\n"
+                "(type chhodo to PROXY_TYPE/default http lagega)")
+            return
+        good, bad = [], []
+        for e in entries:
+            n = norm_proxy(e, kind or None)
+            if n:
+                good.append(n)
+            else:
+                bad.append(e)
+        if good:
+            cur = runtime_proxy_lines()
+            seen = set(cur) | set(PROXIES)
+            for g in good:
+                if g not in seen:
+                    cur.append(g)
+                    seen.add(g)
+            if save_runtime_proxy_lines(cur):
+                load_proxies()
+                X_ROUTE.update({"at": 0, "ok": None, "why": ""})
+            else:
+                bad += good
+                good = []
+        txt = "Proxy add: " + str(len(good)) + " ok"
+        if bad:
+            txt += " | " + str(len(bad)) + " invalid"
+        txt += "\n" + proxy_status_text()
+        if bad:
+            txt += "\ninvalid: " + ", ".join(x[:60] for x in bad[:5])
+        if good:
+            txt += "\n\nAb /proxy test chalao."
+        await u.message.reply_text(txt)
+        return
+    if a in ("clear", "reset", "del", "remove"):
+        had = bool(runtime_proxy_lines())
+        try:
+            os.remove(RUNTIME_PROXY_FILE)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logging.exception("runtime proxies clear")
+        load_proxies()
+        X_ROUTE.update({"at": 0, "ok": None, "why": ""})
+        await u.message.reply_text(
+            ("Runtime proxies clear ho gaye." if had else
+             "Runtime file mein kuch nahi tha.") + "\n" + proxy_status_text())
+        return
     if a == "reload":
         n = len(load_proxies())
         X_ROUTE.update({"at": 0, "ok": None, "why": ""})
@@ -3517,6 +3699,8 @@ async def proxy_cmd(u, c):
     await u.message.reply_text(
         proxy_status_text()
         + "\n\n/proxy test - har proxy check\n/proxy list - masked list"
+          "\n/proxy add [type] host:port:user:pass - add + save (volume)"
+          "\n/proxy clear - runtime proxies hatao"
           "\n/proxy reload - PROXY_FILE dobara padho"
           "\n/proxy off|on - is run ke liye proxy band/chalu")
 
@@ -3590,8 +3774,8 @@ async def netcheck_report(proxy_limit=10):
         verdict = "Sab proxies X tak nahi pohanch rahe."
         if "404" in whys or "307" in whys:
             verdict += ("\n404/307 = ye proxy endpoint nahi, panel/subscription URL hai."
-                        "\nProvider se host:port:user:pass lo, ya xray/sing-box se "
-                        "socks5://127.0.0.1:1080 banao.")
+                        "\nProvider ka host:port:user:pass /proxy add socks5 ... se daalo, "
+                        "ya xray/sing-box se socks5://127.0.0.1:1080 banao.")
         else:
             verdict += ("\nPath-auth/vless link httpx proxy nahi hai; "
                         "http://user:pass@host:port ya socks5 chahiye.")

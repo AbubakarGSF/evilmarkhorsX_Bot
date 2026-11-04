@@ -128,15 +128,33 @@ stay direct.
 | --- | --- |
 | `PROXIES` | comma/space separated list, e.g. `http://u:p@1.2.3.4:8080,socks5://5.6.7.8:1080` |
 | `PROXY_FILE` | path to a file with one proxy per line (`#` comments ok); can live on the volume |
+| `PROXY_TYPE` | scheme for lines without one: `http` (default), `https`, `socks5`, `socks5h` |
 | `PROXY_MODE` | `rotate` (round robin, default) or `random` |
 | `PROXY_TEST_URL` | health-check URL, default `https://api.x.com/1.1/account/verify_credentials.json` |
 | `NETCHECK_ON_START` | send a one-time reachability summary to admins after deploy (default `1`) |
 
-Supported schemes are `http`, `https` and `socks5` (needs `httpx[socks]`,
-already in `requirements.txt`). Hiddify/xray share links (`vless://`,
-`vmess://`, `ss://`, `trojan://`) are **not** HTTP proxies and cannot be used
-directly - export the subscription into a local SOCKS5 listener (xray or
-sing-box) and point `PROXIES` at it.
+Supported schemes are `http`, `https`, `socks5` and `socks5h` (SOCKS needs
+`httpx[socks]`, already in `requirements.txt`). `socks5h` asks the proxy to
+resolve DNS remotely. Hiddify/xray share links (`vless://`, `vmess://`,
+`ss://`, `trojan://`) are **not** HTTP proxies and cannot be used directly -
+export the subscription into a local SOCKS5 listener (xray or sing-box) and
+point `PROXIES` at it.
+
+Accepted proxy line formats:
+
+```
+http://user:pass@1.2.3.4:8080
+socks5://user:pass@1.2.3.4:1080
+socks5h://user:pass@proxy.example.com:1080
+45.144.31.82:5000:LzaUSER:CWNPASS      # provider panel, needs PROXY_TYPE=socks5
+socks5|45.144.31.82:5000:LzaUSER:CWNPASS
+socks5:45.144.31.82:5000:LzaUSER:CWNPASS
+[2001:db8::1]:5000:LzaUSER:CWNPASS     # IPv6 (brackets optional)
+45.144.31.82:5000                       # host:port, no auth
+```
+
+If a provider entry has no scheme, `PROXY_TYPE` decides what it is. An inline
+`socks5|` / `socks5:` / `socks5h|` marker always wins, so mixed lists work.
 
 Rotation is per request, and only connection errors fail over to the next
 proxy; a request that was already sent is never retried, so a tweet cannot be
@@ -156,8 +174,10 @@ Path-auth links are converted automatically: `https://host:port/user/pass`
 prints credentials in the path works as-is.
 
 Admin commands: `/proxy` (status, credentials masked), `/proxy test`
-(ok/fail + latency per proxy), `/proxy list`, `/proxy reload` (re-read
-`PROXY_FILE`), `/proxy off|on` (disable/enable proxies for the current run
+(ok/fail + latency per proxy), `/proxy list`, `/proxy add [type] entry`
+(validate + save to `STATE_DIR/proxies.txt` on the volume), `/proxy clear`
+(remove saved runtime proxies), `/proxy reload` (re-read `PROXY_FILE` and the
+runtime file), `/proxy off|on` (disable/enable proxies for the current run
 without redeploying). `/diag` shows the proxy count and the last network
 error; `/netcheck` tests X direct, every proxy and Supabase in one go and
 prints a verdict. After each deploy the bot runs the same check once and
