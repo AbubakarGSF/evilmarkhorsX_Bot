@@ -2742,6 +2742,9 @@ def _proxy_tips(res):
         tips.append("connect fail = host/port galat ya proxy down")
     if any(r.get("code") in (403, 429) for r in bad):
         tips.append("403/429 = proxy IP X se blocked/limited")
+    if any("non-json" in (r.get("why") or "") for r in bad):
+        tips.append("non-json/block = proxy X tak pohanch raha hai lekin "
+                    "Cloudflare/block page aa raha hai (IP flagged)")
     return ("\n\ntips:\n- " + "\n- ".join(tips)) if tips else ""
 
 
@@ -2756,9 +2759,18 @@ async def probe_proxy(proxy):
                 "ms": int((time.time() - t0) * 1000)}
     ms = int((time.time() - t0) * 1000)
     # 407 = proxy auth chahiye, ye usable nahi. 401/403 X ka jawab ho sakta
-    # hai (proxy ka masla nahi), isliye unhe reachable maana jata hai.
+    # hai (proxy ka masla nahi), isliye unhe reachable maana jata hai - lekin
+    # sirf tab jab jawab JSON ho. Cloudflare/captcha HTML 403 = block page.
     ok = r.status_code < 500 and r.status_code != 407
-    return {"proxy": proxy, "ok": ok, "code": r.status_code, "ms": ms}
+    why = ""
+    if ok:
+        try:
+            r.json()
+        except Exception:
+            ok = False
+            why = "non-json/block"
+    return {"proxy": proxy, "ok": ok, "code": r.status_code, "why": why,
+            "ms": ms}
 
 
 # ============================ WORKERS ============================
@@ -3498,7 +3510,7 @@ async def proxy_cmd(u, c):
           "\n/proxy off|on - is run ke liye proxy band/chalu")
 
 
-async def netcheck_one(label, url, headers=None, proxy=None):
+async def netcheck_one(label, url, headers=None, proxy=None, want_json=False):
     t0 = time.time()
     kw = {"timeout": httpx.Timeout(15.0), "follow_redirects": False,
           "trust_env": False}
@@ -3510,14 +3522,21 @@ async def netcheck_one(label, url, headers=None, proxy=None):
     except Exception as e:
         return label + ": FAIL " + type(e).__name__, False, 0
     ms = int((time.time() - t0) * 1000)
-    return (label + ": HTTP " + str(r.status_code) + " " + str(ms) + "ms",
-            True, r.status_code)
+    txt = label + ": HTTP " + str(r.status_code) + " " + str(ms) + "ms"
+    ok = True
+    if want_json:
+        try:
+            r.json()
+        except Exception:
+            ok = False
+            txt += " (non-json/block)"
+    return txt, ok, r.status_code
 
 
 async def netcheck_report(proxy_limit=10):
     lines = []
     x_url = PROXY_TEST_URL
-    line, direct_ok, _ = await netcheck_one("X direct", x_url)
+    line, direct_ok, _ = await netcheck_one("X direct", x_url, want_json=True)
     lines.append(line)
     proxy_ok = 0
     proxy_fail = 0
