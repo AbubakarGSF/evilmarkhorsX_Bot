@@ -191,6 +191,18 @@ format is the same for both, so run `/proxy detect host:port:user:pass` and
 add the type that returns JSON, or `/proxy add auto ...`. Timeouts are
 hard-capped at 20s so one bad proxy cannot stall the whole test.
 
+Some providers print both ports on the proxy row (for example
+`HTTP/SOCKS5 Port: 63578/63579`); the first is HTTP, the second SOCKS5.
+Use the matching port and type.
+
+If the proxy answers with `502 Bad Gateway` (HTTP) or
+`Proxy Server could not connect: Host unreachable` (SOCKS5), the proxy
+itself is alive but the provider refuses the target. That is a provider-side
+block, common for `x.com`/`api.x.com` on certain locations - the bot cannot
+work around it. Use a proxy/location where X is allowed and re-run
+`/proxy test`. Direct X returning `HTTP 400` is normal (X wants auth), so
+compare the proxy result against that.
+
 If every cookie comes back `unknown` with no `dead`, the cookies were never
 checked - X was not reachable through the configured route. `/netcheck`
 tells you whether direct or the proxies are the problem; suspension/lock

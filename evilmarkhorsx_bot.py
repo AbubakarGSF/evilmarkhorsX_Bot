@@ -2894,6 +2894,11 @@ def _proxy_tips(res):
         tips.append("ProtocolError/Malformed reply = is port par SOCKS5 nahi "
                     "bol raha (HTTP proxy ho sakta hai). /proxy detect <entry> "
                     "chalao, ya /proxy add http ... try karo.")
+    blocked = ("502", "503", "504", "Host unreachable", "Connection refused")
+    if any(any(b in (r.get("why") or "") for b in blocked) for r in bad):
+        tips.append("502/503/504/Host unreachable = proxy zinda hai lekin target "
+                    "reject ho raha hai. Ye provider X block kar raha hai - "
+                    "dusra location/proxy chahiye.")
     return ("\n\ntips:\n- " + "\n- ".join(tips)) if tips else ""
 
 
@@ -3715,8 +3720,15 @@ async def proxy_cmd(u, c):
                 lines.append("  => dono chal rahe hain ("
                              + ", ".join(r["scheme"] for r in good) + ")")
             else:
-                lines.append("  => koi protocol kaam nahi kiya "
-                             "(host/port/creds check karo)")
+                reasons = " ".join((r.get("why") or "") for r in res)
+                if any(b in reasons for b in
+                       ("502", "503", "504", "Host unreachable",
+                        "Connection refused")):
+                    lines.append("  => proxy zinda hai, lekin X blocked "
+                                 "(provider side) - dusra proxy/location lo")
+                else:
+                    lines.append("  => koi protocol kaam nahi kiya "
+                                 "(host/port/creds check karo)")
         if len(entries) > len(use):
             lines.append("+ " + str(len(entries) - len(use))
                          + " skipped (max 10)")
@@ -3909,7 +3921,12 @@ async def netcheck_report(proxy_limit=10):
     elif use_proxy and not proxy_ok:
         whys = " ".join((r.get("why") or "") for r in res if r)
         verdict = "Sab proxies X tak nahi pohanch rahe."
-        if "ProtocolError" in whys or "Malformed reply" in whys:
+        if ("502" in whys or "503" in whys or "504" in whys
+                or "Host unreachable" in whys or "Connection refused" in whys):
+            verdict += ("\nProxy alive hai lekin X target reject ho raha hai "
+                        "(provider-side block). Dusra location/proxy lo jahan "
+                        "X allowed ho - bot/code ka masla nahi hai.")
+        elif "ProtocolError" in whys or "Malformed reply" in whys:
             verdict += ("\nProtocolError = protocol mismatch: is port par SOCKS5 "
                         "nahi hai. /proxy detect <entry> chalao (HTTP bhi try "
                         "karega), ya panel se HTTP list lo.")
