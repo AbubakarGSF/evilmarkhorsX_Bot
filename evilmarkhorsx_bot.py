@@ -102,7 +102,8 @@ STATE_DIR = os.path.dirname(STORE_ABS) or HERE
 DEL_DIR = os.path.join(STATE_DIR, "del_data")
 CAMP_MEDIA_DIR = os.path.join(STATE_DIR, "camp_media")
 DEFAULT_TAG = "#EvilMarkhors_Fucked_IIT_INDIA"
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "7028523300,6120166351").split(",") if x.strip()}
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS = {int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()}
 
 SPLIT = {}
 CTEST = {}  # uid -> jab country test maanga gaya (TTL ke liye)
@@ -489,7 +490,39 @@ async def db_clear(client):
     return await db_delete_where(client, {"id": "gt.0"})
 
 
+_ALLOWED_DELETE_FILTERS = {
+    "status": ("eq.", "neq.", "in."),
+    "id": ("eq.", "neq.", "gt.", "gte.", "lt.", "lte.", "in.", "is."),
+    "last_check": ("eq.", "neq.", "gt.", "gte.", "lt.", "lte.", "in.", "is."),
+}
+
+
+def _validate_delete_filter(params):
+    """PostgREST filter injection rokne ke liye whitelist."""
+    out = {}
+    for k, v in (params or {}).items():
+        base = k
+        op = "eq."
+        for prefix in ("eq.", "neq.", "gt.", "gte.", "lt.", "lte.", "in.", "is.", "like.", "ilike."):
+            if v.startswith(prefix):
+                op = prefix
+                base_v = v[len(prefix):]
+                break
+        else:
+            base_v = v
+        if base not in _ALLOWED_DELETE_FILTERS:
+            continue
+        if op not in _ALLOWED_DELETE_FILTERS[base]:
+            continue
+        out[base] = op + base_v
+    return out or None
+
+
 async def db_delete_where(client, params):
+    params = _validate_delete_filter(params)
+    if params is None:
+        logging.warning("db_delete_where: unsafe filter rejected: %r", params)
+        return 0
     try:
         r = await client.delete(
             db_url(), params=params,
@@ -599,9 +632,7 @@ def save_batch(uid, force=False):
     try:
         p = batch_file(uid)
         with open(p + ".tmp", "w", encoding="utf-8") as f:
-            json.dump({"lines": b["lines"], "results": b["results"], "ok": b["ok"],
-                       "fail": b["fail"], "mode": b["mode"],
-                       "started": b["started"]}, f)
+            json.dump(_sanitize_batch_for_save(b), f)
         os.replace(p + ".tmp", p)
     except Exception:
         logging.exception("save_batch")
@@ -817,11 +848,26 @@ def zip_txt_names(zin, limit=None):
 
 
 def zip_read_bytes(zin, name):
-    """Ek entry bounded read (zip bomb se bachne ke liye)."""
+    """Ek entry bounded read (zip bomb se bachne ke liye).
+
+    info.file_size attacker-controlled ho sakta hai, isliye decompressed bytes
+    ko chunk mein gino aur ZIP_MAX_FILE pe rok do.
+    """
     info = zin.getinfo(name)
     if int(info.file_size or 0) > ZIP_MAX_FILE:
         raise RuntimeError("zip entry bahut bari hai: " + name)
-    return zin.read(name)
+    total = 0
+    chunks = []
+    with zin.open(name) as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > ZIP_MAX_FILE:
+                raise RuntimeError("zip entry decompressed size limit cross: " + name)
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def zip_read_text(zin, name):
@@ -842,7 +888,11 @@ NET_LAST = {"at": 0.0, "what": ""}
 def net_note(what):
     """Aakhri network/API error, /diag ke liye. Racy hai lekin sirf text hai."""
     NET_LAST["at"] = time.time()
-    NET_LAST["what"] = " ".join(str(what or "").split())[:90]
+    # Kabhi raw exception/proxy URL na store karein - sirf generic type+msghint.
+    s = " ".join(str(what or "").split())[:90]
+    # Proxy creds (user:pass@host) ko hata do agar ghalti se aa gaye hon.
+    s = re.sub(r"[A-Za-z0-9._%+-]+:[^@\s]+@", "***@***@", s)
+    NET_LAST["what"] = s
 
 
 def net_last_text():
@@ -1171,8 +1221,45 @@ def parse_ulp(line):
             "password": password, "totp": totp}
 
 
+def _ulp_identity(line):
+    """Line se sirf username/email nikaalo, password/TOTP chhupa do."""
+    ulp = parse_ulp(line)
+    if ulp:
+        return (ulp.get("username") or ulp.get("email") or "") + ":*"
+    return (line.split(":")[0] if line else "") + ":*"
+
+
+def _sanitize_batch_for_save(b):
+    """Batch ko disk par save karne se pehle credentials nikaal do."""
+    out_lines = [_ulp_identity(l) for l in (b.get("lines") or [])]
+    out_results = []
+    for r in (b.get("results") or []):
+        if not r:
+            out_results.append(None)
+            continue
+        nr = {"ok": r.get("ok"), "err": r.get("err"), "pending": r.get("pending")}
+        if r.get("line"):
+            nr["line"] = _ulp_identity(r["line"])
+        if r.get("ulp"):
+            u = r["ulp"]
+            nr["ulp"] = {"username": u.get("username"), "email": u.get("email")}
+        if r.get("details"):
+            d = dict(r["details"])
+            d.pop("Email", None)
+            d.pop("new_pass", None)
+            nr["details"] = d
+        if r.get("new_pass"):
+            nr["new_pass"] = "***"
+        if r.get("new_email"):
+            nr["new_email"] = "***@***"
+        out_results.append(nr)
+    return {"lines": out_lines, "results": out_results, "ok": b.get("ok", 0),
+            "fail": b.get("fail", 0), "mode": b.get("mode", ""),
+            "started": b.get("started", 0)}
+
+
 def gen_pass():
-    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(13)) + "!x7"
+    return "".join(secrets.choice(string.ascii_letters + string.digits + "!@#$%") for _ in range(16))
 
 
 def alias_email(base, username):
@@ -2328,15 +2415,27 @@ async def _campaign_run(u, cfg, accounts, state, uid):
 
 
 def save_del_batch(uid, bid, posted):
-    """Save posted tweet ids so /delbatch can remove them later."""
+    """Save posted tweet ids so /delbatch can remove them later.
+
+    Sirf auth_token + ct0 rakho - delete ke liye bas yehi chahiye, baaki
+    cookie lines disk par na likhein.
+    """
     if not posted:
         return None
     try:
         os.makedirs(DEL_DIR, exist_ok=True)
         path = os.path.join(DEL_DIR, str(uid) + "_camp" + str(bid) + ".json")
+        slim = []
+        for p in posted:
+            ck = {}
+            for c in (p.get("cookies") or []):
+                parts = c.split("\t")
+                if len(parts) >= 7 and parts[5] in ("auth_token", "ct0"):
+                    ck[parts[5]] = parts[6].rstrip("\r")
+            slim.append({"username": p["username"], "ids": p["ids"],
+                         "cookies": ck})
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump([{"username": p["username"], "ids": p["ids"],
-                        "cookies": p.get("cookies") or []} for p in posted], fh)
+            json.dump(slim, fh)
         return path
     except Exception:
         logging.exception("save_del_batch")
@@ -2393,7 +2492,18 @@ async def send_report(u, uid, state, cfg):
                     name = stem + "_" + str(i) + ext
                     i += 1
                 used.add(name)
-                z.writestr("retry/" + name, r["raw"])
+                # Report zip mein raw cookie lines na likhein - user ke paas
+                # pehle se upload kiya file hai; retry folder sirf reference ke liye.
+                raw = r["raw"]
+                # Cookie lines (tab-separated) hata do, sirf meta rakho.
+                lines_out = []
+                for ln in raw.splitlines():
+                    if "\t" in ln and len(ln.split("\t")) >= 7:
+                        parts = ln.split("\t")
+                        if parts[5] in ("auth_token", "ct0"):
+                            continue  # session token - disk par na likhein
+                    lines_out.append(ln)
+                z.writestr("retry/" + name, "\n".join(lines_out))
     reasons = {}
     for f in failed:
         k = f["cls"] + ": " + (f.get("why") or "?")
@@ -2412,6 +2522,9 @@ async def send_report(u, uid, state, cfg):
     if not posted and failed and all(f["cls"] == "NET" for f in failed):
         summary += ("\nSab NET/unknown: X tak request nahi pohanchi (cookies DEAD nahi)."
                     "\n/proxy test, /netcheck aur /diag chalao.")
+    summary += ("\n\nWARNING: retry/ folder aur failed.txt mein account naam hain."
+                " Cookie tokens report zip se hataaye gaye hain; original upload"
+                " file hi retry ke liye use karein.")
     summary += "\nbatch: camp" + bid + "\nDelete tweets: /delbatch camp" + bid
     LAST_REPORT[str(uid)] = (
         summary
@@ -2543,6 +2656,11 @@ PROXY_HINT = set()
 RUNTIME_PROXY_FILE = os.path.join(STATE_DIR, "proxies.txt")
 # Runtime switch: /proxy off se proxies band (deploy ke baghair test ke liye).
 PROXY_DISABLED = False
+# Proxy health: baar-baar fail hone wale proxy ko thik ke liye disable karo.
+PROXY_FAILS = {}
+PROXY_BANNED_UNTIL = {}
+PROXY_BAN_THRESHOLD = int(os.getenv("PROXY_BAN_THRESHOLD", "5"))
+PROXY_BAN_MIN = int(os.getenv("PROXY_BAN_MIN", "30"))
 
 
 def _default_proxy_scheme():
@@ -2782,7 +2900,8 @@ class RotatingProxy(_AsyncBaseTransport):
 
     Sirf connection-level errors (connect/proxy) pe next proxy try hota hai.
     Read/write timeout pe retry nahi hota, warna same tweet do dafa post ho
-    sakta hai.
+    sakta hai. Baar-baar fail hone wale proxy ko PROXY_BAN_MIN minute ke liye
+    skip kar diya jata hai.
     """
 
     def __init__(self, proxies, mode="rotate"):
@@ -2792,11 +2911,35 @@ class RotatingProxy(_AsyncBaseTransport):
         self.lock = asyncio.Lock()
         self.pools = {}
 
+    def _is_banned(self, proxy):
+        until = PROXY_BANNED_UNTIL.get(proxy, 0)
+        if until and time.time() < until:
+            return True
+        if until and time.time() >= until:
+            # Ban expire hua - hata do.
+            PROXY_BANNED_UNTIL.pop(proxy, None)
+            PROXY_FAILS.pop(proxy, None)
+        return False
+
+    def _record_fail(self, proxy):
+        PROXY_FAILS[proxy] = PROXY_FAILS.get(proxy, 0) + 1
+        if PROXY_FAILS[proxy] >= PROXY_BAN_THRESHOLD:
+            PROXY_BANNED_UNTIL[proxy] = time.time() + PROXY_BAN_MIN * 60
+            logging.warning("proxy banned %d min: %s", PROXY_BAN_MIN,
+                            mask_proxy(proxy))
+
+    def _record_ok(self, proxy):
+        if PROXY_FAILS.get(proxy, 0):
+            PROXY_FAILS[proxy] = max(0, PROXY_FAILS[proxy] - 1)
+
     async def _pick(self):
         async with self.lock:
+            available = [p for p in self.proxies if not self._is_banned(p)]
+            if not available:
+                return None
             if self.mode == "random":
-                return random.choice(self.proxies)
-            p = self.proxies[self.idx % len(self.proxies)]
+                return random.choice(available)
+            p = available[self.idx % len(available)]
             self.idx += 1
             return p
 
@@ -2812,19 +2955,26 @@ class RotatingProxy(_AsyncBaseTransport):
 
     async def handle_async_request(self, request):
         last = None
-        for _ in range(min(len(self.proxies), 3)):
+        tries = min(max(len(self.proxies), 1), 3)
+        for _ in range(tries):
             proxy = await self._pick()
+            if proxy is None:
+                break
             try:
-                return await self._pool(proxy).handle_async_request(request)
+                ret = await self._pool(proxy).handle_async_request(request)
+                self._record_ok(proxy)
+                return ret
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as e:
                 last = e
+                self._record_fail(proxy)
                 logging.warning("proxy fail %s: %s", mask_proxy(proxy), type(e).__name__)
             except ImportError as e:
                 last = httpx.ProxyError("proxy " + mask_proxy(proxy) + ": " + str(e))
+                self._record_fail(proxy)
                 logging.error("proxy import fail %s: %s", mask_proxy(proxy), e)
         if last is not None:
             raise last
-        raise httpx.ProxyError("koi proxy configured nahi")
+        raise httpx.ProxyError("koi proxy available nahi (sab banned ya fail)")
 
     async def aclose(self):
         for tr in list(self.pools.values()):
@@ -2859,6 +3009,17 @@ def proxy_status_text():
         return txt
     lines = ["Proxy: ON (" + str(len(PROXIES)) + ") | mode " + proxy_mode(),
              "X traffic only | Telegram + Supabase direct"]
+    banned_now = [(p, PROXY_BANNED_UNTIL.get(p, 0)) for p in PROXIES
+                  if PROXY_BANNED_UNTIL.get(p, 0) and time.time() < PROXY_BANNED_UNTIL[p]]
+    if banned_now:
+        mins_left = [int((until - time.time()) // 60) for _, until in banned_now]
+        lines.append("! banned: " + ", ".join(
+            mask_proxy(p) + " (" + str(m) + "m)" for p, m in zip(
+                [b[0] for b in banned_now], mins_left)))
+    if any(PROXY_FAILS.get(p, 0) for p in PROXIES):
+        lines.append("fails: " + ", ".join(
+            mask_proxy(p) + "=" + str(PROXY_FAILS[p])
+            for p in PROXIES if PROXY_FAILS.get(p, 0)))
     if any(p.startswith("socks5") for p in PROXIES) and not socks_ready():
         lines.append("! socksio missing: pip install 'httpx[socks]'")
     if PROXY_SKIPPED:
@@ -2937,8 +3098,25 @@ async def probe_proxy(proxy, timeout=None):
         except Exception:
             ok = False
             why = "non-json/block"
+    # Ban tracking: 5xx / non-json / connect errors = fail for ban purposes.
+    if ok:
+        _record_proxy_ok(proxy)
+    else:
+        _record_proxy_fail(proxy, why or ("HTTP " + str(r.status_code)))
     return {"proxy": proxy, "ok": ok, "code": r.status_code, "why": why,
             "ms": ms}
+
+
+def _record_proxy_ok(proxy):
+    PROXY_FAILS[proxy] = max(0, PROXY_FAILS.get(proxy, 0) - 1)
+
+
+def _record_proxy_fail(proxy, why=""):
+    PROXY_FAILS[proxy] = PROXY_FAILS.get(proxy, 0) + 1
+    if PROXY_FAILS[proxy] >= PROXY_BAN_THRESHOLD:
+        PROXY_BANNED_UNTIL[proxy] = time.time() + PROXY_BAN_MIN * 60
+        logging.warning("proxy banned %d min: %s (why=%s)", PROXY_BAN_MIN,
+                        mask_proxy(proxy), why)
 
 
 _PROXY_DETECT_SCHEMES = ("socks5", "http")
@@ -3656,6 +3834,9 @@ async def status_cmd(u, c):
 
 
 async def diag_cmd(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("Sirf admin.")
+        return
     import platform
     import telegram
     uid = str(u.effective_user.id)
@@ -4157,7 +4338,9 @@ async def db_cmd(u, c):
                     z.writestr((r.get("username") or "acc") + ".txt",
                                build_cookie_file(data, lines))
                 z.writestr("summary.txt", "exported: " + str(len(rows)))
-            await _send_zip(u, op, "db_export.zip", "Export: " + str(len(rows)))
+            await _send_zip(u, op, "db_export.zip", "Export: " + str(len(rows))
+                            + "\nWARNING: zip mein account cookies hain - file"
+                            " ko kisi ke saath share na karein.")
             shutil.rmtree(d, ignore_errors=True)
         elif sub == "clear":
             if len(a) > 1 and a[1] == "yes":
@@ -4548,7 +4731,11 @@ async def del_batch(uid, u, bid):
     deleted = fail = 0
     async with http_client() as client:
         for it in items:
-            ck = cookie_dict(it.get("cookies") or [])
+            ck_raw = it.get("cookies") or []
+            if isinstance(ck_raw, dict):
+                ck = ck_raw
+            else:
+                ck = cookie_dict(ck_raw)
             if not ck:
                 fail += 1
                 continue
@@ -4683,7 +4870,12 @@ async def on_media(u, c):
     if cfg and cfg.get("stage") == "media":
         cat = ("tweet_image" if kind == "image"
                else "tweet_gif" if kind == "gif" else "tweet_video")
-        path = os.path.join(camp_media_dir(uid), str(int(time.time() * 1000)) + "_" + kind)
+        ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+               "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}.get(mime, "")
+        # ts+counter se collision na ho; extension rakho taake Telegram
+        # file type pehchaan sake.
+        path = os.path.join(camp_media_dir(uid),
+                            str(int(time.time() * 1000)) + "_" + str(random.randint(1000, 9999)) + "_" + kind + ext)
         try:
             f = await tgf.get_file()
             await f.download_to_drive(path)
@@ -4702,7 +4894,9 @@ async def on_media(u, c):
         t["tmp"] = None
         t["media"] = None
     tmp = tempfile.mkdtemp(prefix="twm_")
-    path = os.path.join(tmp, "media")
+    ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+           "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}.get(mime, "")
+    path = os.path.join(tmp, "media" + ext)
     try:
         f = await tgf.get_file()
         await f.download_to_drive(path)
@@ -5314,6 +5508,9 @@ def main():
         print("Bani files:", ", ".join(made))
     if "--init" in sys.argv:
         return
+    if not ADMIN_IDS:
+        print("FATAL: ADMIN_IDS env zaroori hai (koi default nahi). Bot start nahi hoga.")
+        return 1
     os.makedirs(STATE_DIR, exist_ok=True)
     load_store()
     load_proxies()
@@ -5324,6 +5521,10 @@ def main():
     os.makedirs(CAMP_MEDIA_DIR, exist_ok=True)
     if not db_enabled():
         logging.warning("SUPABASE_URL/KEY missing - DB features off")
+    # SUPABASE_KEY service_role hai: ye RLS bypass karta hai. Kabhi logs/env
+    # mein na le jayein, aur rotate karein agar kabhi leak ho.
+    if SUPABASE_KEY and len(SUPABASE_KEY) < 40:
+        logging.warning("SUPABASE_KEY suspicious short - service_role key lamba hona chahiye")
     app = (ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True)
            .post_init(post_init).post_shutdown(post_shutdown).build())
     handlers = [

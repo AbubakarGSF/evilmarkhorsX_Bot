@@ -236,3 +236,22 @@ All of these live in the directory of `STORE_PATH` (default: next to the
 script), so point `STORE_PATH` at your Railway volume, e.g.
 `STORE_PATH=/data/users.json`, and settings, campaigns and media survive
 redeploys.
+
+## Security
+
+- **`ADMIN_IDS` is required.** The bot refuses to start without it. Set it in
+  Railway/dashboard, never rely on defaults.
+- **`/diag` is admin-only.** It no longer returns anything to non-admins, and
+  raw proxy/credential strings are stripped from stored network errors.
+- **Session cookies are sensitive.** `auth_token`/`ct0` give full account
+  takeover. Batch files no longer store raw ULP passwords, and `del_data/`
+  keeps only `auth_token`+`ct0`, but `verify`/campaign `/db export` zips still
+  contain full cookies. Treat any zip from the bot like a password dump -
+  don't forward it, delete it after use.
+- **`SUPABASE_KEY` is a service_role key** that bypasses RLS. Rotate it if it
+  ever touches chat or logs.
+- **`proxies.txt`** (saved by `/proxy add`) is chmod 600 and gitignored, but
+  still plaintext on the volume. Rotate proxy creds periodically.
+- Telegram chat history is plaintext. ULP results (`success.txt`) include
+  passwords - this is the bot's core feature, but be aware chat is not
+  encrypted at rest by Telegram.
