@@ -95,6 +95,7 @@ HEALTH_CHECK_PORT = int(os.getenv("HEALTH_CHECK_PORT", "0"))
 HEALTH_CHECK_HOST = os.getenv("HEALTH_CHECK_HOST", "0.0.0.0")
 # Shared httpx client - connection reuse ke liye, har call pe naya na banaye.
 _SHARED_CLIENT = None
+_START_TIME = time.time()
 HTTPONLY_NAMES = {"auth_token", "ct0", "kdt", "twid", "guest_id",
                   "guest_id_marketing", "guest_id_ads"}
 
@@ -2576,7 +2577,7 @@ async def send_report(u, uid, state, cfg):
 async def reverify_pass(bot, notify=True):
     if not db_enabled():
         return None
-    async with http_client() as client:
+    async with http_client(use_proxy=False) as client:
         rows = await db_fetch(client, {"status": "eq.live",
                                        "or": ("(last_check.lt." + now_iso(-REVERIFY_HOURS)
                                               + ",last_check.is.null)"),
@@ -5173,7 +5174,7 @@ async def verify_with_store(u, uid, st, choice):
         cap += prog.all_unknown_hint()
         if want_db:
             if sink:
-                async with http_client() as client:
+                async with http_client(use_proxy=False) as client:
                     n, e = await db_upsert(client, sink)
                 cap += "\nDB added: " + str(n) + (" (" + e + ")" if e else "")
             else:
@@ -5237,7 +5238,7 @@ async def process_with_store(u, uid, st, choice):
             await prog.update(force=True)
         db_ok, db_err = 0, None
         if want_db and sink:
-            async with http_client() as client:
+            async with http_client(use_proxy=False) as client:
                 db_ok, db_err = await db_upsert(client, sink)
         cap = ("ok " + str(prog.ok) + " | live " + str(prog.live)
                + " | fail " + str(prog.fail))
@@ -5340,7 +5341,7 @@ async def handle_file(u, c, doc):
                     cap += "\nWajah: " + prog.notes_text(3)
                 cap += prog.all_unknown_hint()
                 if sink:
-                    async with http_client() as client:
+                    async with http_client(use_proxy=False) as client:
                         n, e = await db_upsert(client, sink)
                     cap += "\nDB added: " + str(n) + (" (" + e + ")" if e else "")
                 elif smode in ("db", "both"):
@@ -5668,14 +5669,35 @@ async def _health_handler(reader, writer):
             # Build health status
             db_status = 'ok' if db_enabled() else 'off'
             proxy_status = 'off'
+            proxy_count = 0
+            proxy_banned = 0
+            proxy_fails = 0
             if PROXIES:
                 proxy_status = 'on' if not PROXY_DISABLED else 'disabled'
+                proxy_count = len(PROXIES)
+                now = time.time()
+                for p in PROXIES:
+                    if PROXY_BANNED_UNTIL.get(p, 0) and now < PROXY_BANNED_UNTIL[p]:
+                        proxy_banned += 1
+                    if PROXY_FAILS.get(p, 0):
+                        proxy_fails += PROXY_FAILS[p]
             elif PROXY_DISABLED:
                 proxy_status = 'disabled'
 
-            body = ('{"status":"ok","db":"%s","proxy":"%s","live":"%s"}'
+            last_err = NET_LAST.get("what", "") or "none"
+            last_err_ago = 0
+            if NET_LAST.get("at"):
+                last_err_ago = max(int(time.time() - NET_LAST["at"]), 0)
+
+            uptime = int(time.time() - _START_TIME)
+            body = ('{"status":"ok","db":"%s","proxy":"%s","live":"%s",'
+                    '"proxy_count":%d,"proxy_banned":%d,"proxy_fails":%d,'
+                    '"uptime":%d,"last_error":"%s","last_error_ago":%d}'
                     % (db_status, proxy_status,
-                       'on' if LIVE_DEFAULT else 'off'))
+                       'on' if LIVE_DEFAULT else 'off',
+                       proxy_count, proxy_banned, proxy_fails,
+                       uptime,
+                       last_err.replace('"', '\"')[:100], last_err_ago))
             response = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: application/json\r\n"
