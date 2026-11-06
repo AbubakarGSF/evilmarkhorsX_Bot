@@ -3716,6 +3716,7 @@ async def _send_zip(u, path, filename, caption):
 CMD_PAGES = [
  ("1. Basics", (
   "/start\nIntro aur mode list.\n\n"
+  "/rework\nAlt cookie format rework with branding. [plus] [2fa false] [email].txt format support.\n\n"
   "/help\nChhota format guide.\n\n"
   "/commands [page]\nYehi list, page number se: /commands 6. Buttons bhi hain.\n\n"
   "/status\nAapki settings: mode, live, takeover, newpass, newemail, store, batch, pending, split, campaign.\n\n"
@@ -3838,7 +3839,7 @@ async def on_cmd_cb(u, c):
 async def start(u, c):
     await u.message.reply_text(
         "Evil Markhors Bot\n\nModes:\n1) COOKIES rework\n2) ULP login + takeover\n3) VERIFY\n\n"
-        "/mode /live /takeover /newpass /newemail /store /status /diag /netcheck /finalize /cancel\n"
+        "/mode /live /takeover /newpass /newemail /store /status /diag /netcheck /finalize /cancel /rework\n"
         "Admin: /camp /db /split /extract /broadcast /countrytest /delbatches\n\n"
         "Poori command list: /commands")
 
@@ -4222,6 +4223,19 @@ async def mode_cmd(u, c):
 async def verify_cmd(u, c):
     await set_cfg(u.effective_user.id, mode="verify")
     await u.message.reply_text("Mode = verify. Ab cookie zip bhejo.")
+
+
+async def rework_cmd(u, c):
+    """Alternative format cookie rework with branding."""
+    await set_cfg(u.effective_user.id, mode="rework")
+    await u.message.reply_text(
+        "Mode = rework. Ab cookie .txt bhejo.\n"
+        "Supported formats:\n"
+        "[plus] [2fa false] [email].txt\n"
+        "[free] [2fa true] [email].txt\n"
+        "[Free] [email].txt\n"
+        "free data @email .txt\n\n"
+        "Output: branded zip with standard format.")
 
 
 async def live_cmd(u, c):
@@ -5073,6 +5087,131 @@ def detect_mode(text, forced):
     return "cookies" if _looks_like_cookie(text) else "ulp"
 
 
+# ============================ ALT COOKIE FORMAT REWORK ============================
+# Alternative cookie formats (from other panels/tools):
+#   [plus] [2fa false] [advparasverma007@gmail.com].txt
+#   [free] [2fa true] [tuchtfeld.nico@gmail.com].txt
+#   [go] [2fa false] [1vemula.shyam@gmail.com].txt
+#   [Free] [sm6327279@gmail.com].txt
+#   free data @masonebrute .txt
+#
+# These files contain X/Twitter cookies (auth_token, ct0, etc.) in tab-separated
+# Netscape format or plain key=value lines. This module parses them, extracts
+# metadata from the filename, and rebrands with the bot's standard format.
+
+import re as _re
+
+
+def parse_alt_cookie_filename(filename):
+    """Extract metadata from alternative cookie filename.
+
+    Returns dict with keys: type, two_fa, email, raw.
+    """
+    name = (filename or "").strip()
+    if name.lower().endswith(".txt"):
+        name = name[:-4]
+    result = {"type": "", "two_fa": "", "email": "", "raw": name}
+
+    # Pattern: [type] [2fa true/false] [email]
+    m = _re.match(
+        r"^\[([^\]]+)\]\s*\[2fa\s*(true|false)?\]\s*\[([^\]]+)\]",
+        name, _re.I)
+    if m:
+        result["type"] = m.group(1).strip()
+        result["two_fa"] = (m.group(2) or "").lower()
+        result["email"] = m.group(3).strip()
+        return result
+
+    # Pattern: [type] [email]  (no 2fa field)
+    m = _re.match(r"^\[([^\]]+)\]\s*\[([^\]]+)\]", name)
+    if m:
+        result["type"] = m.group(1).strip()
+        result["email"] = m.group(2).strip()
+        return result
+
+    # Pattern: free data @email
+    m = _re.match(r"^(free|paid|premium|plus|go)\s+data\s+@([^\s]+)", name, _re.I)
+    if m:
+        result["type"] = m.group(1).strip()
+        result["email"] = m.group(2).strip()
+        return result
+
+    # Pattern: [email] only
+    m = _re.match(r"^\[([^\]]+)\]", name)
+    if m:
+        result["email"] = m.group(1).strip()
+        return result
+
+    return result
+
+
+def parse_alt_cookie_content(text):
+    """Parse cookie content from alternative format text.
+
+    Supports:
+      - Netscape tab-separated lines (#HttpOnly_ prefix optional)
+      - key=value lines
+      - key: value format
+
+    Returns list of cookie strings in Netscape format.
+    """
+    cookies = []
+    seen = set()
+    exp = int(time.time()) + 86400 * 30
+
+    for line in (text or "").splitlines():
+        line = line.rstrip("\r")
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+
+        # Netscape tab-separated: domain	flag	path	secure	expire	name	value
+        if "	" in line and len(line.split("	")) >= 7:
+            parts = line.split("	")
+            name = parts[5].strip()
+            val = parts[6].strip()
+            if name and val and name not in seen:
+                seen.add(name)
+                cookies.append(_cookie_line(
+                    ".x.com	TRUE	/	TRUE	" + str(exp) + "	" + name + "	" + val))
+            continue
+
+        # key=value or key: value
+        for sep in ("=", ":"):
+            if sep in line:
+                k, v = line.split(sep, 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and v and k not in seen:
+                    seen.add(k)
+                    cookies.append(_cookie_line(
+                        ".x.com	TRUE	/	TRUE	" + str(exp) + "	" + k + "	" + v))
+                break
+
+    return cookies
+
+
+def rework_alt_cookie(filename, text):
+    """Rebrand an alternative format cookie file with bot branding.
+
+    Returns (output_text, meta_dict).
+    """
+    meta = parse_alt_cookie_filename(filename)
+    cookies = parse_alt_cookie_content(text)
+
+    data = {}
+    if meta["type"]:
+        data["Type"] = meta["type"]
+    if meta["two_fa"]:
+        data["2FA"] = meta["two_fa"]
+    if meta["email"]:
+        data["Email"] = meta["email"]
+    data["Status"] = "UNKNOWN"
+    data["Reason"] = "alt format reworked - not live checked"
+
+    output = build_cookie_file(data, cookies)
+    return output, meta
+
+
 async def _hard_clear(uid, keep_tmp=False):
     for v in PEND.get(uid, {}).values():
         try:
@@ -5372,6 +5511,36 @@ async def handle_file(u, c, doc):
                   "count": cnt, "msg": msg, "at": time.time()}
             await _hard_clear(uid, keep_tmp=True)
             await process_with_store(u, uid, st, smode)
+            return
+        if mode == "rework":
+            op = os.path.join(tmp, "out.zip")
+            prog = Progress(msg, 0, "REWORK")
+            prog.phase = "Reworking"
+            used = set()
+            count = 0
+            with zipfile.ZipFile(op, "w", zipfile.ZIP_DEFLATED) as z:
+                if is_zip:
+                    with zipfile.ZipFile(ip) as zin:
+                        for name in zip_txt_names(zin):
+                            raw = zip_read_text(zin, name)
+                            out, meta = rework_alt_cookie(
+                                os.path.basename(name), raw)
+                            z.writestr("reworked/" + _unique_name(
+                                os.path.basename(name), used), out)
+                            count += 1
+                else:
+                    with open(ip, encoding="utf-8", errors="ignore") as fh:
+                        raw = fh.read()
+                    out, meta = rework_alt_cookie(
+                        (doc.file_name or "account.txt"), raw)
+                    z.writestr("reworked/" + _unique_name(
+                        os.path.basename(doc.file_name or "account.txt"), used), out)
+                    count += 1
+                z.writestr("summary.txt", "reworked: " + str(count) + "\nformat: alt_cookie_branding\n")
+            cap = "Rework complete | files " + str(count)
+            await _send_zip(u, op, "evilmarkhors_rework.zip", cap)
+            await _edit(msg, "Complete")
+            await _hard_clear(uid)
             return
         lines = []
         if is_zip:
@@ -5780,7 +5949,7 @@ def main():
         ("status", status_cmd), ("diag", diag_cmd), ("proxy", proxy_cmd),
         ("netcheck", netcheck_cmd),
         ("store", store_cmd),
-        ("mode", mode_cmd), ("verify", verify_cmd), ("live", live_cmd),
+        ("mode", mode_cmd), ("verify", verify_cmd), ("rework", rework_cmd), ("live", live_cmd),
         ("takeover", takeover_cmd), ("newpass", newpass_cmd), ("newemail", newemail_cmd),
         ("finalize", finalize_cmd), ("cancel", cancel_cmd),
         ("split", split_cmd), ("splitoff", splitoff_cmd), ("extract", extract_cmd),
