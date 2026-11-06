@@ -4231,11 +4231,12 @@ async def rework_cmd(u, c):
     await u.message.reply_text(
         "Mode = rework. Ab cookie .txt bhejo.\n"
         "Supported formats:\n"
-        "[plus] [2fa false] [email].txt\n"
-        "[free] [2fa true] [email].txt\n"
-        "[Free] [email].txt\n"
-        "free data @email .txt\n\n"
-        "Output: branded zip with standard format.")
+        "  X/Twitter:   [plus] [2fa false] [email].txt\n"
+        "  Instagram:   [7 followers] [2 posts] [verified false] [business false] [username].txt\n"
+        "  Facebook:    [37 friends] [business false] [marketplace false] [] [userid].txt\n"
+        "  Reddit:      [1500 karma] [verified true] [username].txt\n"
+        "  Generic:     [free] [email].txt, free data @email .txt\n\n"
+        "Output: branded zip with standard format (platform metadata included).")
 
 
 async def live_cmd(u, c):
@@ -5089,15 +5090,15 @@ def detect_mode(text, forced):
 
 # ============================ ALT COOKIE FORMAT REWORK ============================
 # Alternative cookie formats (from other panels/tools):
-#   [plus] [2fa false] [advparasverma007@gmail.com].txt
-#   [free] [2fa true] [tuchtfeld.nico@gmail.com].txt
-#   [go] [2fa false] [1vemula.shyam@gmail.com].txt
-#   [Free] [sm6327279@gmail.com].txt
-#   free data @masonebrute .txt
+#   X/Twitter:   [plus] [2fa false] [advparasverma007@gmail.com].txt
+#   Instagram:   [7 followers] [2 posts] [verified false] [business false] [theayushco].txt
+#   Facebook:    [37 friends] [business false] [marketplace false] [] [100072204576683].txt
+#   Reddit:      [1500 karma] [verified true] [username].txt
+#   Generic:     [free] [sm6327279@gmail.com].txt, free data @email .txt
 #
-# These files contain X/Twitter cookies (auth_token, ct0, etc.) in tab-separated
-# Netscape format or plain key=value lines. This module parses them, extracts
-# metadata from the filename, and rebrands with the bot's standard format.
+# These files contain cookies in tab-separated Netscape format or plain key=value
+# lines. This module parses them, extracts metadata from the filename, and
+# rebrands with the bot's standard format.
 
 import re as _re
 
@@ -5105,47 +5106,106 @@ import re as _re
 def parse_alt_cookie_filename(filename):
     """Extract metadata from alternative cookie filename.
 
-    Returns dict with keys: type, two_fa, email, raw.
+    Returns dict with keys: platform, type, count1, count2, verified, business,
+    marketplace, country, email, username, userid, raw.
     """
     name = (filename or "").strip()
     if name.lower().endswith(".txt"):
         name = name[:-4]
-    result = {"type": "", "two_fa": "", "email": "", "raw": name}
+    result = {
+        "platform": "", "type": "", "count1": "", "count2": "",
+        "verified": "", "business": "", "marketplace": "", "country": "",
+        "email": "", "username": "", "userid": "", "raw": name,
+    }
 
-    # Pattern: [type] [2fa true/false] [email]
+    # Instagram: [7 followers] [2 posts] [verified false] [business false] [username]
+    m = _re.match(
+        r"^\[(\d+)\s+followers\]\s*\[(\d+)\s+posts\]\s*"
+        r"\[verified\s+(true|false)\]\s*\[business\s+(true|false)\]\s*"
+        r"\[([^\]]+)\]", name, _re.I)
+    if m:
+        result.update({
+            "platform": "instagram", "count1": m.group(1), "count2": m.group(2),
+            "verified": m.group(3).lower(), "business": m.group(4).lower(),
+            "username": m.group(5).strip(),
+        })
+        return result
+
+    # Facebook: [37 friends] [business false] [marketplace false] [] [userid]
+    # Facebook: [4639 friends] [business false] [marketplace true] [IN] [userid]
+    m = _re.match(
+        r"^\[(\d+)\s+friends\]\s*\[business\s+(true|false)\]"
+        r"\s*\[marketplace\s+(true|false)\]\s*\[([^\]]*)\]\s*\[([^\]]+)\]",
+        name, _re.I)
+    if m:
+        result.update({
+            "platform": "facebook", "count1": m.group(1),
+            "business": m.group(2).lower(), "marketplace": m.group(3).lower(),
+            "country": m.group(4).strip(), "userid": m.group(5).strip(),
+        })
+        return result
+
+    # Reddit: [1500 karma] [verified true] [username]
+    m = _re.match(
+        r"^\[(\d+)\s+karma\]\s*\[verified\s+(true|false)\]\s*\[([^\]]+)\]",
+        name, _re.I)
+    if m:
+        result.update({
+            "platform": "reddit", "count1": m.group(1),
+            "verified": m.group(2).lower(), "username": m.group(3).strip(),
+        })
+        return result
+
+    # X/Twitter: [plus] [2fa true/false] [email]
     m = _re.match(
         r"^\[([^\]]+)\]\s*\[2fa\s*(true|false)?\]\s*\[([^\]]+)\]",
         name, _re.I)
     if m:
-        result["type"] = m.group(1).strip()
-        result["two_fa"] = (m.group(2) or "").lower()
-        result["email"] = m.group(3).strip()
+        result.update({
+            "platform": "x", "type": m.group(1).strip(),
+            "verified": (m.group(2) or "").lower(), "email": m.group(3).strip(),
+        })
         return result
 
-    # Pattern: [type] [email]  (no 2fa field)
+    # X/Twitter: [type] [email] (no 2fa field)
     m = _re.match(r"^\[([^\]]+)\]\s*\[([^\]]+)\]", name)
     if m:
-        result["type"] = m.group(1).strip()
-        result["email"] = m.group(2).strip()
+        result.update({
+            "platform": "x", "type": m.group(1).strip(),
+            "email": m.group(2).strip(),
+        })
         return result
 
     # Pattern: free data @email
     m = _re.match(r"^(free|paid|premium|plus|go)\s+data\s+@([^\s]+)", name, _re.I)
     if m:
-        result["type"] = m.group(1).strip()
-        result["email"] = m.group(2).strip()
+        result.update({
+            "platform": "x", "type": m.group(1).strip(),
+            "email": m.group(2).strip(),
+        })
         return result
 
     # Pattern: [email] only
     m = _re.match(r"^\[([^\]]+)\]", name)
     if m:
-        result["email"] = m.group(1).strip()
+        result.update({"platform": "x", "email": m.group(1).strip()})
         return result
 
     return result
 
 
-def parse_alt_cookie_content(text):
+def _domain_for_platform(platform):
+    """Map platform to cookie domain."""
+    d = {
+        "instagram": ".instagram.com",
+        "facebook": ".facebook.com",
+        "reddit": ".reddit.com",
+        "x": ".x.com",
+    }
+    return d.get(platform, ".x.com")
+
+
+def parse_alt_cookie_content(text, platform="x"):
     """Parse cookie content from alternative format text.
 
     Supports:
@@ -5153,11 +5213,12 @@ def parse_alt_cookie_content(text):
       - key=value lines
       - key: value format
 
-    Returns list of cookie strings in Netscape format.
+    Returns list of cookie strings in Netscape format for the platform domain.
     """
     cookies = []
     seen = set()
     exp = int(time.time()) + 86400 * 30
+    domain = _domain_for_platform(platform)
 
     for line in (text or "").splitlines():
         line = line.rstrip("\r")
@@ -5165,14 +5226,14 @@ def parse_alt_cookie_content(text):
             continue
 
         # Netscape tab-separated: domain	flag	path	secure	expire	name	value
-        if "	" in line and len(line.split("	")) >= 7:
-            parts = line.split("	")
+        if "\t" in line and len(line.split("\t")) >= 7:
+            parts = line.split("\t")
             name = parts[5].strip()
             val = parts[6].strip()
             if name and val and name not in seen:
                 seen.add(name)
                 cookies.append(_cookie_line(
-                    ".x.com	TRUE	/	TRUE	" + str(exp) + "	" + name + "	" + val))
+                    domain + "\tTRUE\t/\tTRUE\t" + str(exp) + "\t" + name + "\t" + val))
             continue
 
         # key=value or key: value
@@ -5184,7 +5245,7 @@ def parse_alt_cookie_content(text):
                 if k and v and k not in seen:
                     seen.add(k)
                     cookies.append(_cookie_line(
-                        ".x.com	TRUE	/	TRUE	" + str(exp) + "	" + k + "	" + v))
+                        domain + "\tTRUE\t/\tTRUE\t" + str(exp) + "\t" + k + "\t" + v))
                 break
 
     return cookies
@@ -5196,15 +5257,31 @@ def rework_alt_cookie(filename, text):
     Returns (output_text, meta_dict).
     """
     meta = parse_alt_cookie_filename(filename)
-    cookies = parse_alt_cookie_content(text)
+    cookies = parse_alt_cookie_content(text, meta["platform"])
 
     data = {}
+    if meta["platform"]:
+        data["Platform"] = meta["platform"].title()
     if meta["type"]:
         data["Type"] = meta["type"]
-    if meta["two_fa"]:
-        data["2FA"] = meta["two_fa"]
+    if meta["count1"]:
+        data["Count1"] = meta["count1"]
+    if meta["count2"]:
+        data["Count2"] = meta["count2"]
+    if meta["verified"]:
+        data["Verified"] = meta["verified"]
+    if meta["business"]:
+        data["Business"] = meta["business"]
+    if meta["marketplace"]:
+        data["Marketplace"] = meta["marketplace"]
+    if meta["country"]:
+        data["Country"] = meta["country"]
     if meta["email"]:
         data["Email"] = meta["email"]
+    if meta["username"]:
+        data["Username"] = meta["username"]
+    if meta["userid"]:
+        data["UserID"] = meta["userid"]
     data["Status"] = "UNKNOWN"
     data["Reason"] = "alt format reworked - not live checked"
 
