@@ -106,7 +106,7 @@ arrived after `PEND_TTL_MIN` minutes, and drops stale country-test state.
 
 - `ZIP_UPLOAD_MAX` (default 45 MB) - larger reports are rejected with a
   message instead of a failed upload.
-- `MAX_FILES` (default 5000) - accounts read from one zip.
+- `MAX_FILES` (default 15000) - accounts read from one zip. Increase for larger batches.
 - `ZIP_MAX_FILE` (default 16 MB) - max uncompressed size of one entry.
 - `ZIP_MAX_TOTAL` (default 256 MB) - max total uncompressed size per zip,
   so a zip bomb cannot exhaust memory.

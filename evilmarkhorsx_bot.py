@@ -51,7 +51,7 @@ CONCURRENCY = int(os.getenv("CONCURRENCY", "8"))
 TIMEOUT = float(os.getenv("TIMEOUT", "25"))
 ACC_TIMEOUT = float(os.getenv("ACC_TIMEOUT", "90"))
 MEDIA_WAIT_MAX = float(os.getenv("MEDIA_WAIT_MAX", "300"))
-MAX_FILES = int(os.getenv("MAX_FILES", "5000"))
+MAX_FILES = int(os.getenv("MAX_FILES", "15000"))
 RETRIES = int(os.getenv("RETRIES", "3"))
 TWEET_LIMIT = int(os.getenv("TWEET_LIMIT", "265"))
 POST_MIN = float(os.getenv("POST_MIN", "45"))
@@ -258,9 +258,9 @@ FILES = {
                      "WEBSITE=https://evilmarkhors.me\nCREDIT=Config by Evil Markhors\n"
                      "STORE_PATH=users.json\nADMIN_IDS=7028523300,6120166351\n"
                      "POST_MIN=45\nPOST_MAX=110\nTHREAD_GAP_MIN=4\nTHREAD_GAP_MAX=9\nTWEET_LIMIT=265\n"
-                     "TIMEOUT=25\nACC_TIMEOUT=90\nRETRIES=3\nMAX_FILES=5000\n"
+                     "TIMEOUT=25\nACC_TIMEOUT=90\nRETRIES=3\nMAX_FILES=15000\n"
                      "MEDIA_WAIT_MAX=300\n"
-                     "JOB_REAP_MIN=30\nZIP_UPLOAD_MAX=47185920\n"
+                     "JOB_REAP_MIN=30\nZIP_UPLOAD_MAX=62914560\n"
                      "ZIP_MAX_FILE=16777216\nZIP_MAX_TOTAL=268435456\n"
                      "PEND_TTL_MIN=180\nCAMP_STAGE_SEC=21600\n"
                      "SUPABASE_URL=https://xxxx.supabase.co\nSUPABASE_KEY=service_role_key\n"
@@ -3735,7 +3735,7 @@ CMD_PAGES = [
   "Har account ka field block banta hai: Status, Username, ID, Followers, Friends, Posts, Likes, Media, "
   "Verified, Protected, Country, Year, Email + cookie lines.\n\n"
   "Dead bhi file mein rehta hai (Status: DEAD). DB mein sirf LIVE jaata hai.\n"
-  "Limit MAX_FILES = 5000 per file.")),
+  "Limit MAX_FILES = 15000 per file.")),
  ("4. Verify / Split / Extract", (
   "/verify\nMode verify. Phir zip bhejo: working/ + dead/ + unknown/ + summary.txt.\n"
   "unknown = net/server error, dead nahi â€” dobara verify karo.\n\n"
