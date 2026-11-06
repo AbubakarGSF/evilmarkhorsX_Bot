@@ -808,8 +808,13 @@ def build_cookie_file(data, cookies):
 
 
 def _unique_name(base, used):
-    """Return a name unique within `used` (mutating it), keeping the extension."""
+    """Return a name unique within `used` (mutating it), keeping the extension.
+
+    Strips directory components from `base` to prevent zip-slip (e.g.
+    a malicious zip entry `../../evil.txt` writing outside the archive).
+    """
     base = base or "account.txt"
+    base = os.path.basename(base.replace("\\", "/"))
     fn, i = base, 2
     stem, ext = os.path.splitext(base)
     while fn in used:
@@ -1463,9 +1468,9 @@ def fmt_result(r):
         return ""
     if not r.get("ok"):
         if r.get("pending"):
-            return ("== PENDING ==\n" + str(r.get("line", ""))
+            return ("== PENDING ==\n" + _ulp_identity(str(r.get("line", "")))
                     + "\nStatus: " + str(r.get("pending")) + "\n")
-        return ("== FAIL ==\n" + str(r.get("line", ""))
+        return ("== FAIL ==\n" + _ulp_identity(str(r.get("line", "")))
                 + "\nError: " + str(r.get("err", "")) + "\n")
     u, d = r["ulp"], r["details"]
     o = ["Login: OK", "Username: " + str(d.get("Username", "")),
@@ -3618,8 +3623,8 @@ def build_zip(path, uid):
             lines.append(name + ":" + mail + ":"
                          + (r.get("new_pass") or r["ulp"]["password"]))
         z.writestr("success.txt", "\n".join(lines))
-        z.writestr("failed.txt", "\n".join((r.get("line") or "") for r in bad))
-        z.writestr("pending.txt", "\n".join((r.get("line") or "") for r in pend))
+        z.writestr("failed.txt", "\n".join((_ulp_identity(r.get("line") or "") for r in bad)))
+        z.writestr("pending.txt", "\n".join((_ulp_identity(r.get("line") or "") for r in pend)))
     return path
 
 
