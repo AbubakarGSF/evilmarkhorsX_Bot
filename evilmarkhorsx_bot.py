@@ -90,6 +90,11 @@ PROXY_HOSTS = ("api.x.com", "upload.x.com", "api.twitter.com",
 # Deploy ke baad admins ko ek netcheck summary bhejein (0 = off).
 NETCHECK_ON_START = os.getenv("NETCHECK_ON_START", "1").strip().lower() in (
     "1", "true", "yes", "on")
+# Health check server port (0 = disabled). Railway / load balancer ke liye.
+HEALTH_CHECK_PORT = int(os.getenv("HEALTH_CHECK_PORT", "0"))
+HEALTH_CHECK_HOST = os.getenv("HEALTH_CHECK_HOST", "0.0.0.0")
+# Shared httpx client - connection reuse ke liye, har call pe naya na banaye.
+_SHARED_CLIENT = None
 HTTPONLY_NAMES = {"auth_token", "ct0", "kdt", "twid", "guest_id",
                   "guest_id_marketing", "guest_id_ads"}
 
@@ -2361,7 +2366,7 @@ async def run_campaign_db(u, uid):
                             + ",last_post.is.null)")
         lim = cfg.get("limit") or MAX_FILES
         accounts, seen = [], set()
-        async with http_client() as client:
+        async with http_client(use_proxy=False) as client:
             offset, page_size = 0, 500
             while len(accounts) < lim and offset < 500000:
                 page = await db_fetch(client, params, limit=page_size, offset=offset)
@@ -3188,7 +3193,17 @@ async def detect_proxy(raw):
 
 
 # ============================ WORKERS ============================
-def http_client():
+def http_client(use_proxy=True):
+    global _SHARED_CLIENT
+    # Non-proxy calls (Supabase, etc.) reuse a shared client for connection pooling.
+    if not use_proxy:
+        if _SHARED_CLIENT is None:
+            _SHARED_CLIENT = httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(TIMEOUT, connect=min(15.0, TIMEOUT)),
+                limits=httpx.Limits(max_connections=max(CONCURRENCY * 2, 10),
+                                    max_keepalive_connections=max(CONCURRENCY, 10)))
+        return _SHARED_CLIENT
     kw = dict(
         follow_redirects=True,
         timeout=httpx.Timeout(TIMEOUT, connect=min(15.0, TIMEOUT)),
@@ -3200,6 +3215,17 @@ def http_client():
         # PROXIES hi source of truth; HTTP(S)_PROXY env ignore karo
         kw["trust_env"] = False
     return httpx.AsyncClient(**kw)
+
+
+async def close_shared_client():
+    """Shared client ko shutdown pe band karein."""
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is not None:
+        try:
+            await _SHARED_CLIENT.aclose()
+        except Exception:
+            pass
+        _SHARED_CLIENT = None
 
 
 async def pmap(fn, items, conc=None):
@@ -4321,7 +4347,7 @@ async def db_cmd(u, c):
         return
     a = [x.lower() for x in c.args]
     sub = a[0] if a else "stats"
-    async with http_client() as client:
+    async with http_client(use_proxy=False) as client:
         if sub == "stats":
             await u.message.reply_text(
                 "DB pool\ntotal " + str(await db_count(client)) + "\nlive "
@@ -5563,6 +5589,7 @@ async def post_init(app):
     app.bot_data["jan"] = asyncio.create_task(janitor_loop())
     if NETCHECK_ON_START:
         app.bot_data["net"] = asyncio.create_task(startup_netcheck(app))
+    app.bot_data["health"] = asyncio.create_task(start_health_server())
     logging.info("reverify loop start (%sh)", REVERIFY_HOURS)
 
 
@@ -5580,6 +5607,8 @@ async def post_shutdown(app):
             tasks.append(job["task"])
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    await stop_health_server()
+    await close_shared_client()
 
 
 async def _spawn(u, kind, factory):
@@ -5620,6 +5649,83 @@ async def on_doc(u, c):
         await _spawn(u, "tweet", lambda: run_tweet_batch(u, doc))
         return
     await _spawn(u, "file", lambda: handle_file(u, c, doc))
+
+
+
+async def _health_handler(reader, writer):
+    """Minimal HTTP health check endpoint."""
+    try:
+        data = await reader.read(1024)
+        if not data:
+            writer.close()
+            return
+        request_line = data.split(b'\n')[0].decode('utf-8', errors='ignore')
+        parts = request_line.split()
+        method = parts[0] if len(parts) > 0 else ''
+        path = parts[1] if len(parts) > 1 else ''
+
+        if method == 'GET' and path == '/healthz':
+            # Build health status
+            db_status = 'ok' if db_enabled() else 'off'
+            proxy_status = 'off'
+            if PROXIES:
+                proxy_status = 'on' if not PROXY_DISABLED else 'disabled'
+            elif PROXY_DISABLED:
+                proxy_status = 'disabled'
+
+            body = ('{"status":"ok","db":"%s","proxy":"%s","live":"%s"}'
+                    % (db_status, proxy_status,
+                       'on' if LIVE_DEFAULT else 'off'))
+            response = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: %d\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "%s" % (len(body), body))
+        else:
+            response = (
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n"
+                "\r\n")
+
+        writer.write(response.encode('utf-8'))
+        await writer.drain()
+    except Exception:
+        pass
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def start_health_server():
+    """Health check server shuru karein agar HEALTH_CHECK_PORT set hai."""
+    global _health_server
+    if HEALTH_CHECK_PORT <= 0:
+        return
+    try:
+        _health_server = await asyncio.start_server(
+            _health_handler, HEALTH_CHECK_HOST, HEALTH_CHECK_PORT)
+        logging.info("Health check server on %s:%d",
+                     HEALTH_CHECK_HOST, HEALTH_CHECK_PORT)
+    except Exception:
+        logging.exception("Health check server start fail")
+
+
+async def stop_health_server():
+    """Health check server band karein."""
+    global _health_server
+    if _health_server is not None:
+        _health_server.close()
+        try:
+            await _health_server.wait_closed()
+        except Exception:
+            pass
+        _health_server = None
 
 
 def main():
