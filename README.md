@@ -255,3 +255,31 @@ redeploys.
 - Telegram chat history is plaintext. ULP results (`success.txt`) include
   passwords - this is the bot's core feature, but be aware chat is not
   encrypted at rest by Telegram.
+
+## Health Check
+
+Set `HEALTH_CHECK_PORT` (e.g. `8080`) to enable an HTTP health endpoint at
+`GET /healthz`. Returns JSON with `status`, `db`, `proxy`, and `live` fields.
+Useful for Railway health checks and load balancers. Returns `200 OK` when the
+bot process is running; `db` is `ok` if Supabase is configured, `proxy` shows
+proxy state, and `live` shows whether live check is on.
+
+Example:
+
+```bash
+HEALTH_CHECK_PORT=8080
+HEALTH_CHECK_HOST=0.0.0.0
+```
+
+Then `curl http://localhost:8080/healthz` returns:
+
+```json
+{"status":"ok","db":"ok","proxy":"on","live":"on"}
+```
+
+## Connection Pooling
+
+Supabase (non-proxy) calls now reuse a shared `httpx.AsyncClient` for
+connection pooling, reducing TLS handshake overhead. X API calls still create
+fresh clients per operation so proxy rotation and bans work correctly.
+
