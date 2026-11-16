@@ -29,3 +29,30 @@ create index if not exists accounts_check_idx on accounts (last_check);
 create index if not exists accounts_owner_idx on accounts (owner);
 
 alter table accounts enable row level security;
+
+-- Allow service_role full access (bypasses RLS)
+grant all on accounts to service_role;
+
+-- Allow insert for authenticated users (new account creation)
+create policy "Allow insert for authenticated"
+on accounts for insert
+to authenticated
+with check (true);
+
+-- Allow select for authenticated users (read-only access)
+create policy "Allow select for authenticated"
+on accounts for select
+to authenticated
+using (true);
+
+-- Allow update for authenticated users (profile updates)
+create policy "Allow update for authenticated"
+on accounts for update
+to authenticated
+using (true);
+
+-- Allow delete for service_role only (admin operations)
+create policy "Allow delete for service_role"
+on accounts for delete
+to service_role
+using (true);

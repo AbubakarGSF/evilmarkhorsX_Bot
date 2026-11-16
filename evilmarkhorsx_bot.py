@@ -110,6 +110,12 @@ CAMP_MEDIA_DIR = os.path.join(STATE_DIR, "camp_media")
 DEFAULT_TAG = "#EvilMarkhors_Fucked_IIT_INDIA"
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = {int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()}
+if not ADMIN_IDS:
+    logging.critical("ADMIN_IDS not set - bot refusing to start")
+    raise SystemExit(1)
+
+# Proxy validation at startup - will be run during bot init
+# Proxies tested later via /proxy detect command
 
 SPLIT = {}
 CTEST = {}  # uid -> jab country test maanga gaya (TTL ke liye)
@@ -224,8 +230,10 @@ NUM_FIELDS = {"year", "followers", "friends", "posts", "likes", "media"}
 BOOL_FIELDS = {"verified", "card", "api", "developer api", "protected", "2fa", "suspended"}
 PREFIXES = ["", "", "", "", "Update:", "News:", "Breaking:", "Just in:", "Aaj:", "Note:"]
 SUFFIXES = ["", "", "", "", "!", ".", " ðŸ”¥", " âœ”"]
-BEARER = ("AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
-          "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
+BEARER = os.getenv("BEARER_TOKEN", "")
+if not BEARER:
+    logging.critical("BEARER_TOKEN env var not set - bot cannot function without X API auth")
+    raise SystemExit(1)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -316,21 +324,53 @@ def bootstrap(force=False):
 # ============================ COUNTRY MAP ============================
 ISO_NAME = {
     "PK": "Pakistan", "IN": "India", "BD": "Bangladesh", "AF": "Afghanistan",
-    "US": "United States", "GB": "United Kingdom", "CA": "Canada", "AU": "Australia",
-    "AE": "United Arab Emirates", "SA": "Saudi Arabia", "QA": "Qatar", "KW": "Kuwait",
-    "OM": "Oman", "BH": "Bahrain", "TR": "Turkey", "IR": "Iran", "IQ": "Iraq",
-    "EG": "Egypt", "NG": "Nigeria", "KE": "Kenya", "ZA": "South Africa",
-    "DE": "Germany", "FR": "France", "IT": "Italy", "ES": "Spain", "NL": "Netherlands",
-    "SE": "Sweden", "NO": "Norway", "DK": "Denmark", "FI": "Finland", "PL": "Poland",
-    "RU": "Russia", "UA": "Ukraine", "CN": "China", "JP": "Japan", "KR": "South Korea",
-    "SG": "Singapore", "MY": "Malaysia", "ID": "Indonesia", "PH": "Philippines",
-    "TH": "Thailand", "VN": "Vietnam", "NP": "Nepal", "LK": "Sri Lanka",
-    "MV": "Maldives", "MM": "Myanmar", "BR": "Brazil", "AR": "Argentina",
-    "MX": "Mexico", "CL": "Chile", "CO": "Colombia", "PE": "Peru", "NZ": "New Zealand",
-    "IE": "Ireland", "PT": "Portugal", "CH": "Switzerland", "AT": "Austria",
-    "CZ": "Czechia", "GR": "Greece", "HU": "Hungary", "RO": "Romania", "IL": "Israel",
-    "JO": "Jordan", "LB": "Lebanon", "SY": "Syria", "YE": "Yemen", "SD": "Sudan",
-    "ET": "Ethiopia", "GH": "Ghana", "MA": "Morocco", "DZ": "Algeria", "TN": "Tunisia",
+    "AL": "Albania", "DZ": "Algeria", "AS": "American Samoa", "AD": "Andorra",
+    "AO": "Angola", "AQ": "Antarctica", "AG": "Antigua & Barbuda", "AR": "Argentina",
+    "AM": "Armenia", "AW": "Aruba", "AU": "Australia", "AT": "Austria", "AZ": "Azerbaijan",
+    "BS": "Bahamas", "BH": "Bahrain", "BB": "Barbados", "BY": "Belarus", "BE": "Belgium",
+    "BZ": "Belize", "BJ": "Benin", "BM": "Bermuda", "BT": "Bhutan", "BO": "Bolivia",
+    "BA": "Bosnia & Herzegovina", "BW": "Botswana", "BV": "Bouvet Island", "BR": "Brazil",
+    "IO": "British Indian Ocean Territory", "BN": "Brunei Darussalam", "BG": "Bulgaria",
+    "KH": "Cambodia", "CM": "Cameroon", "CA": "Canada", "CV": "Cape Verde", "KY": "Cayman Islands",
+    "CF": "Central African Republic", "TD": "Chad", "CL": "Chile", "CN": "China", "CX": "Christmas Island",
+    "CC": "Cocos (Keeling) Islands", "CO": "Colombia", "KM": "Comoros", "CG": "Congo",
+    "CD": "Congo, Democratic Republic", "CK": "Cook Islands", "CR": "Costa Rica", "CI": "Côte d'Ivoire",
+    "HR": "Croatia", "CU": "Cuba", "CY": "Cyprus", "CZ": "Czechia", "DK": "Denmark",
+    "DJ": "Djibouti", "DM": "Dominica", "EC": "Ecuador", "EG": "Egypt", "SV": "El Salvador",
+    "GQ": "Equatorial Guinea", "ER": "Eritrea", "EE": "Estonia", "ET": "Ethiopia", "FK": "Falkland Islands",
+    "FO": "Faroe Islands", "FJ": "Fiji", "FI": "Finland", "FR": "France", "GF": "French Guiana",
+    "PF": "French Polynesia", "GA": "Gabon", "GM": "Gambia", "GE": "Georgia", "DE": "Germany",
+    "GH": "Ghana", "GR": "Greece", "GL": "Greenland", "GT": "Guatemala", "GG": "Guernsey",
+    "GN": "Guinea", "GW": "Guinea-Bissau", "GY": "Guyana", "HT": "Haiti", "HM": "Heard & McDonald Islands",
+    "VA": "Holy See (Vatican City)", "HN": "Honduras", "HK": "Hong Kong", "HU": "Hungary",
+    "IS": "Iceland", "IN": "India", "ID": "Indonesia", "IR": "Iran", "IQ": "Iraq", "IE": "Ireland",
+    "IM": "Isle of Man", "IL": "Israel", "IT": "Italy", "JM": "Jamaica", "JP": "Japan",
+    "JO": "Jordan", "KZ": "Kazakhstan", "KE": "Kenya", "KI": "Kiribati", "KP": "North Korea",
+    "KR": "South Korea", "KW": "Kuwait", "KG": "Kyrgyzstan", "LA": "Laos", "LV": "Latvia",
+    "LB": "Lebanon", "LR": "Liberia", "LY": "Libya", "LI": "Liechtenstein", "LT": "Lithuania",
+    "LU": "Luxembourg", "MK": "North Macedonia", "MG": "Madagascar", "MW": "Malawi", "MY": "Malaysia",
+    "MV": "Maldives", "ML": "Mali", "MT": "Malta", "MH": "Marshall Islands", "MQ": "Martinique",
+    "MR": "Mauritania", "MU": "Mauritius", "YT": "Mayotte", "MX": "Mexico", "FM": "Micronesia",
+    "MD": "Moldova", "MC": "Monaco", "MN": "Mongolia", "ME": "Montenegro", "MA": "Morocco",
+    "MZ": "Mozambique", "NA": "Namibia", "NR": "Nauru", "NP": "Nepal", "NC": "New Caledonia",
+    "NZ": "New Zealand", "NI": "Nicaragua", "NE": "Niger", "NG": "Nigeria", "NF": "Norfolk Island",
+    "MP": "Northern Mariana Islands", "NO": "Norway", "OM": "Oman", "PK": "Pakistan", "PW": "Palau",
+    "PS": "Palestine", "PA": "Panama", "PG": "Papua New Guinea", "PY": "Paraguay", "PE": "Peru",
+    "PH": "Philippines", "PN": "Pitcairn", "PL": "Poland", "PT": "Portugal", "PR": "Puerto Rico",
+    "QA": "Qatar", "RE": "Réunion", "RO": "Romania", "RU": "Russia", "RW": "Rwanda",
+    "BL": "Saint Barthélemy", "SH": "Saint Helena", "KN": "Saint Kitts & Nevis", "LC": "Saint Lucia",
+    "MF": "Saint Martin", "PM": "Saint Pierre & Miquelon", "VC": "Saint Vincent & Grenadines",
+    "WS": "Samoa", "SM": "San Marino", "ST": "Sao Tome & Principe", "SA": "Saudi Arabia",
+    "SN": "Senegal", "RS": "Serbia", "SC": "Seychelles", "SL": "Sierra Leone", "SG": "Singapore",
+    "SK": "Slovakia", "SI": "Slovenia", "SB": "Solomon Islands", "SO": "Somalia", "ZA": "South Africa",
+    "GS": "South Georgia", "ES": "Spain", "LK": "Sri Lanka", "SD": "Sudan", "SR": "Suriname",
+    "SJ": "Svalbard & Jan Mayen", "SY": "Syria", "TW": "Taiwan", "TJ": "Tajikistan", "TZ": "Tanzania",
+    "TH": "Thailand", "TL": "Timor-Leste", "TG": "Togo", "TN": "Tunisia", "TR": "Turkey",
+    "TM": "Turkmenistan", "TC": "Turks & Caicos Islands", "TV": "Tuvalu", "UG": "Uganda", "UA": "Ukraine",
+    "AE": "United Arab Emirates", "GB": "United Kingdom", "UM": "United States Minor Outlying Islands",
+    "US": "United States", "UY": "Uruguay", "UZ": "Uzbekistan", "VU": "Vanuatu", "VE": "Venezuela",
+    "VN": "Vietnam", "WF": "Wallis & Futuna", "EH": "Western Sahara", "YE": "Yemen", "ZM": "Zambia",
+    "ZW": "Zimbabwe",
 }
 NAME_ISO = {v.lower(): k for k, v in ISO_NAME.items()}
 CITY_ISO = {
@@ -346,6 +386,11 @@ CITY_ISO = {
     "kathmandu": "NP", "sydney": "AU", "melbourne": "AU", "singapore": "SG",
     "kuala lumpur": "MY", "jakarta": "ID", "manila": "PH", "bangkok": "TH",
     "berlin": "DE", "paris": "FR", "madrid": "ES", "rome": "IT", "amsterdam": "NL",
+    "moscow": "RU", "brussels": "BE", "vienna": "AT", "stockholm": "SE",
+    "copenhagen": "DK", "helsinki": "FI", "oslo": "NO", "warsaw": "PL",
+    "budapest": "HU", "bucharest": "RO", "milan": "IT", "barcelona": "ES",
+    "dublin": "IE", "zurich": "CH", "dusseldorf": "DE", "frankfurt": "DE",
+    "geneva": "CH", "amsterdam": "NL", "paris": "FR", "london": "GB", "dubai": "AE",
 }
 
 
@@ -364,7 +409,7 @@ def to_iso(v):
         return max(hits)[1]
     hits = [(len(c), iso) for c, iso in CITY_ISO.items()
             if re.search(r"\b" + re.escape(c) + r"\b", lv)]
-    return max(hits)[1] if hits else ""
+    return max(hits, default=())[1] if hits else ""
 
 
 def as_int(v, default=0):
@@ -626,14 +671,15 @@ def batch_file(uid):
 BATCH_SAVE = {}
 
 
-def save_batch(uid, force=False):
-    b = BATCH.get(uid)
-    if not b:
-        return
-    now = time.time()
-    if not force and now - BATCH_SAVE.get(uid, 0.0) < 2.0:
-        return
-    BATCH_SAVE[uid] = now
+async def async_save_batch(uid, force=False):
+    async with _lock:
+        b = BATCH.get(uid)
+        if not b:
+            return
+        now = time.time()
+        if not force and now - BATCH_SAVE.get(uid, 0.0) < 2.0:
+            return
+        BATCH_SAVE[uid] = now
     try:
         p = batch_file(uid)
         with open(p + ".tmp", "w", encoding="utf-8") as f:
@@ -838,6 +884,8 @@ def zip_txt_names(zin, limit=None):
     """
     out, total = [], 0
     cap = MAX_FILES if limit is None else limit
+    # Also add a guard: max 15000 .txt entries total (strict cap)
+    entry_count = 0
     for n in zin.namelist():
         if not n.lower().endswith(".txt") or n.endswith("/"):
             continue
@@ -845,6 +893,9 @@ def zip_txt_names(zin, limit=None):
             info = zin.getinfo(n)
         except KeyError:
             continue
+        entry_count += 1
+        if entry_count > MAX_FILES:
+            raise RuntimeError("zip mein 15000 se zyada .txt entries hain - chhote batches mein todo")
         size = int(info.file_size or 0)
         if size > ZIP_MAX_FILE:
             raise RuntimeError("zip entry bahut bari hai: " + n
@@ -1076,15 +1127,45 @@ async def live_check(client, ck):
             d["Country"] = cc
     elif st == "ok" and isinstance(j, dict):
         codes = err_codes(j)
-        if codes & (DEAD_CODES | LOCKED_CODES | SUSP_CODES):
+        if codes & DEAD_CODES:
             d["Status"] = "DEAD"
             d["Reason"] = err_reason(codes)
+        elif codes & LOCKED_CODES:
+            d["Status"] = "LOCKED"
+            d["Reason"] = err_reason(codes)
+        elif codes & SUSP_CODES:
+            d["Status"] = "SUSPENDED"
+            d["Reason"] = err_reason(codes)
+        else:
+            # Check for rate limit (429) - not dead, just throttle
+            if codes & LIMIT_CODES or (not codes and "daily" in ((r.text or "")[:400] if 'r' else "") and "limit" in ((r.text or "")[:400] if 'r' else "")):
+                d["Status"] = "RATE_LIMITED"
+                d["Reason"] = "rate limited"
+            else:
+                d["Status"] = "UNKNOWN"
+                d["Reason"] = err_reason(codes) or "empty verify payload"
+    elif st == "auth":
+        # 401/403 could mean dead cookie OR rate limit OR Cloudflare block
+        # Check the response body to determine actual reason
+        if isinstance(j, dict):
+            codes = err_codes(j)
+            if codes & DEAD_CODES:
+                d["Status"] = "DEAD"
+                d["Reason"] = err_reason(codes)
+            elif codes & LOCKED_CODES:
+                d["Status"] = "LOCKED"
+                d["Reason"] = err_reason(codes)
+            elif codes & SUSP_CODES:
+                d["Status"] = "SUSPENDED"
+                d["Reason"] = err_reason(codes)
+            else:
+                # 403 without known codes usually = Cloudflare/proxy block, not dead
+                # Return UNKNOWN so user can /proxy test
+                d["Status"] = "UNKNOWN"
+                d["Reason"] = "auth block (proxy/cloudflare - run /proxy test)"
         else:
             d["Status"] = "UNKNOWN"
-            d["Reason"] = err_reason(codes) or "empty verify payload"
-    elif st == "auth":
-        d["Status"] = "DEAD"
-        d["Reason"] = err_reason(err_codes(j)) or why.get("v") or "auth 401/403"
+            d["Reason"] = "auth 401/403 no JSON body"
     elif st == "ok":
         d["Status"] = "UNKNOWN"
         d["Reason"] = "bad verify payload"
@@ -3623,7 +3704,7 @@ async def run_ulp_batch(uid, lines, prog):
                         pass
             finally:
                 prog.done += 1
-                save_batch(uid)
+                await async_save_batch(uid)
 
     async def heartbeat():
         while prog.done < prog.total:
@@ -3635,7 +3716,7 @@ async def run_ulp_batch(uid, lines, prog):
         await asyncio.gather(*(one(i, l) for i, l in enumerate(lines)))
     finally:
         hb.cancel()
-        save_batch(uid, force=True)
+        await async_save_batch(uid, force=True)
 
 
 def batch_counts(b, pend_idx=()):
@@ -5670,7 +5751,7 @@ async def finalize_batch(uid, u):
     if cur and cur["task"] is not asyncio.current_task() and not cur["task"].done():
         await u.message.reply_text("Kaam chal raha hai. Khatam hone do ya /cancel.")
         return
-    save_batch(uid, force=True)
+    await async_save_batch(uid, force=True)
     op = os.path.join(b["tmp"], "out.zip")
     build_zip(op, uid)
     succ, bfail, npend = batch_counts(b, PEND.get(uid, {}))
@@ -5759,7 +5840,7 @@ async def on_text(u, c):
                         pass
                 if not keep:
                     del pend[key]
-                save_batch(uid)
+                await async_save_batch(uid)
             elif st["kind"] == "email":
                 ck = dict(st["client"].cookies)
                 if await confirm_email(st["client"], ck, code):
@@ -5771,7 +5852,7 @@ async def on_text(u, c):
                     b["ok"] += 1
                     del pend[key]
                     await st["client"].aclose()
-                    save_batch(uid)
+                    await async_save_batch(uid)
                 else:
                     await u.message.reply_text("Code galat, dobara bhejo.")
         except Exception:
@@ -5854,6 +5935,8 @@ async def post_shutdown(app):
             tasks.append(job["task"])
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    # Shared HTTP client band karein - resource leak rokne ke liye
+    await close_shared_client()
     await stop_health_server()
     await close_shared_client()
 
