@@ -11,7 +11,6 @@ Har line ke liye:
 Exit codes: 0 = koi auth-OK proxy mila, 2 = sab reject/unreachable.
 """
 import base64
-import json
 import re
 import socket
 import ssl

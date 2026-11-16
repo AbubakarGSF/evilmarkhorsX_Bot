@@ -242,6 +242,27 @@ It prints `OK` + exit IP per proxy, or `AUTH REJECTED` / `FAIL`, and exits
 non-zero when no proxy authenticates. Copy fresh `user:pass` from the panel
 into `kro_proxies.txt`, push, then send `/proxy reload` in Telegram.
 
+### Full ISO country coverage
+
+`kro_proxies_all.txt` has all 249 ISO 3166-1 alpha-2 countries in
+`socks5|gw.proxi.st:9999:nrta23q1-cc-XX:...` format. Use it with
+`PROXY_FILE=kro_proxies_all.txt`.
+
+It is not loaded by default because the gateway currently rejects the
+credentials in it (249/249 `SOCKS5 0x01/0x01`, see `PROXY_SCAN_REPORT.md`).
+After the panel gives working credentials, rescan and write **only** the
+working entries:
+
+```bash
+python tools/scan_countries.py --password "<new-pass>" --out kro_proxies.txt
+```
+
+`scan_countries.py` checks every ISO code, prints `OK`/`AUTH`/`FAIL` per
+country, saves `scan_countries.json`, and writes only `AUTH_OK` entries to
+`--out`. Keep `--workers 4 --delay 0.25` (defaults) - bursting the gateway
+gets your IP throttled (TCP drops for a minute or two).
+
+
 
 ## Deployment
 

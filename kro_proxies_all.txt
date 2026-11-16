@@ -1,0 +1,509 @@
+# KRO gateway - FULL ISO 3166-1 alpha-2 coverage (249 entries)
+# Generated 2026-11-17 02:59 from the panel country list.
+#
+# STATUS: scan par in credentials ko gateway ne reject kiya
+#   SOCKS5 auth reply 0x01/0x01 = invalid username/password (249/249)
+#   dekho PROXY_SCAN_REPORT.md. Ye file tab kaam karegi jab panel se
+#   naye user:pass mil jayen:
+#     python tools/scan_countries.py --password '<naya-pass>'
+#   Sirf working entries ko kro_proxies.txt mein copy karein.
+#
+# Format: socks5|host:port:user:pass (PROXY_TYPE ki zaroorat nahi)
+# AD - Andorra
+socks5|gw.proxi.st:9999:nrta23q1-cc-AD:mo1KpFnV
+# AE - United Arab Emirates
+socks5|gw.proxi.st:9999:nrta23q1-cc-AE:mo1KpFnV
+# AF - Afghanistan
+socks5|gw.proxi.st:9999:nrta23q1-cc-AF:mo1KpFnV
+# AG - Antigua and Barbuda
+socks5|gw.proxi.st:9999:nrta23q1-cc-AG:mo1KpFnV
+# AI - Anguilla
+socks5|gw.proxi.st:9999:nrta23q1-cc-AI:mo1KpFnV
+# AL - Albania
+socks5|gw.proxi.st:9999:nrta23q1-cc-AL:mo1KpFnV
+# AM - Armenia
+socks5|gw.proxi.st:9999:nrta23q1-cc-AM:mo1KpFnV
+# AO - Angola
+socks5|gw.proxi.st:9999:nrta23q1-cc-AO:mo1KpFnV
+# AQ - Antarctica
+socks5|gw.proxi.st:9999:nrta23q1-cc-AQ:mo1KpFnV
+# AR - Argentina
+socks5|gw.proxi.st:9999:nrta23q1-cc-AR:mo1KpFnV
+# AS - American Samoa
+socks5|gw.proxi.st:9999:nrta23q1-cc-AS:mo1KpFnV
+# AT - Austria
+socks5|gw.proxi.st:9999:nrta23q1-cc-AT:mo1KpFnV
+# AU - Australia
+socks5|gw.proxi.st:9999:nrta23q1-cc-AU:mo1KpFnV
+# AW - Aruba
+socks5|gw.proxi.st:9999:nrta23q1-cc-AW:mo1KpFnV
+# AX - Åland Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-AX:mo1KpFnV
+# AZ - Azerbaijan
+socks5|gw.proxi.st:9999:nrta23q1-cc-AZ:mo1KpFnV
+# BA - Bosnia and Herzegovina
+socks5|gw.proxi.st:9999:nrta23q1-cc-BA:mo1KpFnV
+# BB - Barbados
+socks5|gw.proxi.st:9999:nrta23q1-cc-BB:mo1KpFnV
+# BD - Bangladesh
+socks5|gw.proxi.st:9999:nrta23q1-cc-BD:mo1KpFnV
+# BE - Belgium
+socks5|gw.proxi.st:9999:nrta23q1-cc-BE:mo1KpFnV
+# BF - Burkina Faso
+socks5|gw.proxi.st:9999:nrta23q1-cc-BF:mo1KpFnV
+# BG - Bulgaria
+socks5|gw.proxi.st:9999:nrta23q1-cc-BG:mo1KpFnV
+# BH - Bahrain
+socks5|gw.proxi.st:9999:nrta23q1-cc-BH:mo1KpFnV
+# BI - Burundi
+socks5|gw.proxi.st:9999:nrta23q1-cc-BI:mo1KpFnV
+# BJ - Benin
+socks5|gw.proxi.st:9999:nrta23q1-cc-BJ:mo1KpFnV
+# BL - Saint Barthélemy
+socks5|gw.proxi.st:9999:nrta23q1-cc-BL:mo1KpFnV
+# BM - Bermuda
+socks5|gw.proxi.st:9999:nrta23q1-cc-BM:mo1KpFnV
+# BN - Brunei Darussalam
+socks5|gw.proxi.st:9999:nrta23q1-cc-BN:mo1KpFnV
+# BO - Bolivia, Plurinational State of
+socks5|gw.proxi.st:9999:nrta23q1-cc-BO:mo1KpFnV
+# BQ - Bonaire, Sint Eustatius and Saba
+socks5|gw.proxi.st:9999:nrta23q1-cc-BQ:mo1KpFnV
+# BR - Brazil
+socks5|gw.proxi.st:9999:nrta23q1-cc-BR:mo1KpFnV
+# BS - Bahamas
+socks5|gw.proxi.st:9999:nrta23q1-cc-BS:mo1KpFnV
+# BT - Bhutan
+socks5|gw.proxi.st:9999:nrta23q1-cc-BT:mo1KpFnV
+# BV - Bouvet Island
+socks5|gw.proxi.st:9999:nrta23q1-cc-BV:mo1KpFnV
+# BW - Botswana
+socks5|gw.proxi.st:9999:nrta23q1-cc-BW:mo1KpFnV
+# BY - Belarus
+socks5|gw.proxi.st:9999:nrta23q1-cc-BY:mo1KpFnV
+# BZ - Belize
+socks5|gw.proxi.st:9999:nrta23q1-cc-BZ:mo1KpFnV
+# CA - Canada
+socks5|gw.proxi.st:9999:nrta23q1-cc-CA:mo1KpFnV
+# CC - Cocos (Keeling) Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-CC:mo1KpFnV
+# CD - Congo, The Democratic Republic of the
+socks5|gw.proxi.st:9999:nrta23q1-cc-CD:mo1KpFnV
+# CF - Central African Republic
+socks5|gw.proxi.st:9999:nrta23q1-cc-CF:mo1KpFnV
+# CG - Congo
+socks5|gw.proxi.st:9999:nrta23q1-cc-CG:mo1KpFnV
+# CH - Switzerland
+socks5|gw.proxi.st:9999:nrta23q1-cc-CH:mo1KpFnV
+# CI - Côte d'Ivoire
+socks5|gw.proxi.st:9999:nrta23q1-cc-CI:mo1KpFnV
+# CK - Cook Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-CK:mo1KpFnV
+# CL - Chile
+socks5|gw.proxi.st:9999:nrta23q1-cc-CL:mo1KpFnV
+# CM - Cameroon
+socks5|gw.proxi.st:9999:nrta23q1-cc-CM:mo1KpFnV
+# CN - China
+socks5|gw.proxi.st:9999:nrta23q1-cc-CN:mo1KpFnV
+# CO - Colombia
+socks5|gw.proxi.st:9999:nrta23q1-cc-CO:mo1KpFnV
+# CR - Costa Rica
+socks5|gw.proxi.st:9999:nrta23q1-cc-CR:mo1KpFnV
+# CU - Cuba
+socks5|gw.proxi.st:9999:nrta23q1-cc-CU:mo1KpFnV
+# CV - Cabo Verde
+socks5|gw.proxi.st:9999:nrta23q1-cc-CV:mo1KpFnV
+# CW - Curaçao
+socks5|gw.proxi.st:9999:nrta23q1-cc-CW:mo1KpFnV
+# CX - Christmas Island
+socks5|gw.proxi.st:9999:nrta23q1-cc-CX:mo1KpFnV
+# CY - Cyprus
+socks5|gw.proxi.st:9999:nrta23q1-cc-CY:mo1KpFnV
+# CZ - Czechia
+socks5|gw.proxi.st:9999:nrta23q1-cc-CZ:mo1KpFnV
+# DE - Germany
+socks5|gw.proxi.st:9999:nrta23q1-cc-DE:mo1KpFnV
+# DJ - Djibouti
+socks5|gw.proxi.st:9999:nrta23q1-cc-DJ:mo1KpFnV
+# DK - Denmark
+socks5|gw.proxi.st:9999:nrta23q1-cc-DK:mo1KpFnV
+# DM - Dominica
+socks5|gw.proxi.st:9999:nrta23q1-cc-DM:mo1KpFnV
+# DO - Dominican Republic
+socks5|gw.proxi.st:9999:nrta23q1-cc-DO:mo1KpFnV
+# DZ - Algeria
+socks5|gw.proxi.st:9999:nrta23q1-cc-DZ:mo1KpFnV
+# EC - Ecuador
+socks5|gw.proxi.st:9999:nrta23q1-cc-EC:mo1KpFnV
+# EE - Estonia
+socks5|gw.proxi.st:9999:nrta23q1-cc-EE:mo1KpFnV
+# EG - Egypt
+socks5|gw.proxi.st:9999:nrta23q1-cc-EG:mo1KpFnV
+# EH - Western Sahara
+socks5|gw.proxi.st:9999:nrta23q1-cc-EH:mo1KpFnV
+# ER - Eritrea
+socks5|gw.proxi.st:9999:nrta23q1-cc-ER:mo1KpFnV
+# ES - Spain
+socks5|gw.proxi.st:9999:nrta23q1-cc-ES:mo1KpFnV
+# ET - Ethiopia
+socks5|gw.proxi.st:9999:nrta23q1-cc-ET:mo1KpFnV
+# FI - Finland
+socks5|gw.proxi.st:9999:nrta23q1-cc-FI:mo1KpFnV
+# FJ - Fiji
+socks5|gw.proxi.st:9999:nrta23q1-cc-FJ:mo1KpFnV
+# FK - Falkland Islands (Malvinas)
+socks5|gw.proxi.st:9999:nrta23q1-cc-FK:mo1KpFnV
+# FM - Micronesia, Federated States of
+socks5|gw.proxi.st:9999:nrta23q1-cc-FM:mo1KpFnV
+# FO - Faroe Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-FO:mo1KpFnV
+# FR - France
+socks5|gw.proxi.st:9999:nrta23q1-cc-FR:mo1KpFnV
+# GA - Gabon
+socks5|gw.proxi.st:9999:nrta23q1-cc-GA:mo1KpFnV
+# GB - United Kingdom
+socks5|gw.proxi.st:9999:nrta23q1-cc-GB:mo1KpFnV
+# GD - Grenada
+socks5|gw.proxi.st:9999:nrta23q1-cc-GD:mo1KpFnV
+# GE - Georgia
+socks5|gw.proxi.st:9999:nrta23q1-cc-GE:mo1KpFnV
+# GF - French Guiana
+socks5|gw.proxi.st:9999:nrta23q1-cc-GF:mo1KpFnV
+# GG - Guernsey
+socks5|gw.proxi.st:9999:nrta23q1-cc-GG:mo1KpFnV
+# GH - Ghana
+socks5|gw.proxi.st:9999:nrta23q1-cc-GH:mo1KpFnV
+# GI - Gibraltar
+socks5|gw.proxi.st:9999:nrta23q1-cc-GI:mo1KpFnV
+# GL - Greenland
+socks5|gw.proxi.st:9999:nrta23q1-cc-GL:mo1KpFnV
+# GM - Gambia
+socks5|gw.proxi.st:9999:nrta23q1-cc-GM:mo1KpFnV
+# GN - Guinea
+socks5|gw.proxi.st:9999:nrta23q1-cc-GN:mo1KpFnV
+# GP - Guadeloupe
+socks5|gw.proxi.st:9999:nrta23q1-cc-GP:mo1KpFnV
+# GQ - Equatorial Guinea
+socks5|gw.proxi.st:9999:nrta23q1-cc-GQ:mo1KpFnV
+# GR - Greece
+socks5|gw.proxi.st:9999:nrta23q1-cc-GR:mo1KpFnV
+# GS - South Georgia and the South Sandwich Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-GS:mo1KpFnV
+# GT - Guatemala
+socks5|gw.proxi.st:9999:nrta23q1-cc-GT:mo1KpFnV
+# GU - Guam
+socks5|gw.proxi.st:9999:nrta23q1-cc-GU:mo1KpFnV
+# GW - Guinea-Bissau
+socks5|gw.proxi.st:9999:nrta23q1-cc-GW:mo1KpFnV
+# GY - Guyana
+socks5|gw.proxi.st:9999:nrta23q1-cc-GY:mo1KpFnV
+# HK - Hong Kong
+socks5|gw.proxi.st:9999:nrta23q1-cc-HK:mo1KpFnV
+# HM - Heard Island and McDonald Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-HM:mo1KpFnV
+# HN - Honduras
+socks5|gw.proxi.st:9999:nrta23q1-cc-HN:mo1KpFnV
+# HR - Croatia
+socks5|gw.proxi.st:9999:nrta23q1-cc-HR:mo1KpFnV
+# HT - Haiti
+socks5|gw.proxi.st:9999:nrta23q1-cc-HT:mo1KpFnV
+# HU - Hungary
+socks5|gw.proxi.st:9999:nrta23q1-cc-HU:mo1KpFnV
+# ID - Indonesia
+socks5|gw.proxi.st:9999:nrta23q1-cc-ID:mo1KpFnV
+# IE - Ireland
+socks5|gw.proxi.st:9999:nrta23q1-cc-IE:mo1KpFnV
+# IL - Israel
+socks5|gw.proxi.st:9999:nrta23q1-cc-IL:mo1KpFnV
+# IM - Isle of Man
+socks5|gw.proxi.st:9999:nrta23q1-cc-IM:mo1KpFnV
+# IN - India
+socks5|gw.proxi.st:9999:nrta23q1-cc-IN:mo1KpFnV
+# IO - British Indian Ocean Territory
+socks5|gw.proxi.st:9999:nrta23q1-cc-IO:mo1KpFnV
+# IQ - Iraq
+socks5|gw.proxi.st:9999:nrta23q1-cc-IQ:mo1KpFnV
+# IR - Iran, Islamic Republic of
+socks5|gw.proxi.st:9999:nrta23q1-cc-IR:mo1KpFnV
+# IS - Iceland
+socks5|gw.proxi.st:9999:nrta23q1-cc-IS:mo1KpFnV
+# IT - Italy
+socks5|gw.proxi.st:9999:nrta23q1-cc-IT:mo1KpFnV
+# JE - Jersey
+socks5|gw.proxi.st:9999:nrta23q1-cc-JE:mo1KpFnV
+# JM - Jamaica
+socks5|gw.proxi.st:9999:nrta23q1-cc-JM:mo1KpFnV
+# JO - Jordan
+socks5|gw.proxi.st:9999:nrta23q1-cc-JO:mo1KpFnV
+# JP - Japan
+socks5|gw.proxi.st:9999:nrta23q1-cc-JP:mo1KpFnV
+# KE - Kenya
+socks5|gw.proxi.st:9999:nrta23q1-cc-KE:mo1KpFnV
+# KG - Kyrgyzstan
+socks5|gw.proxi.st:9999:nrta23q1-cc-KG:mo1KpFnV
+# KH - Cambodia
+socks5|gw.proxi.st:9999:nrta23q1-cc-KH:mo1KpFnV
+# KI - Kiribati
+socks5|gw.proxi.st:9999:nrta23q1-cc-KI:mo1KpFnV
+# KM - Comoros
+socks5|gw.proxi.st:9999:nrta23q1-cc-KM:mo1KpFnV
+# KN - Saint Kitts and Nevis
+socks5|gw.proxi.st:9999:nrta23q1-cc-KN:mo1KpFnV
+# KP - Korea, Democratic People's Republic of
+socks5|gw.proxi.st:9999:nrta23q1-cc-KP:mo1KpFnV
+# KR - Korea, Republic of
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV
+# KW - Kuwait
+socks5|gw.proxi.st:9999:nrta23q1-cc-KW:mo1KpFnV
+# KY - Cayman Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-KY:mo1KpFnV
+# KZ - Kazakhstan
+socks5|gw.proxi.st:9999:nrta23q1-cc-KZ:mo1KpFnV
+# LA - Lao People's Democratic Republic
+socks5|gw.proxi.st:9999:nrta23q1-cc-LA:mo1KpFnV
+# LB - Lebanon
+socks5|gw.proxi.st:9999:nrta23q1-cc-LB:mo1KpFnV
+# LC - Saint Lucia
+socks5|gw.proxi.st:9999:nrta23q1-cc-LC:mo1KpFnV
+# LI - Liechtenstein
+socks5|gw.proxi.st:9999:nrta23q1-cc-LI:mo1KpFnV
+# LK - Sri Lanka
+socks5|gw.proxi.st:9999:nrta23q1-cc-LK:mo1KpFnV
+# LR - Liberia
+socks5|gw.proxi.st:9999:nrta23q1-cc-LR:mo1KpFnV
+# LS - Lesotho
+socks5|gw.proxi.st:9999:nrta23q1-cc-LS:mo1KpFnV
+# LT - Lithuania
+socks5|gw.proxi.st:9999:nrta23q1-cc-LT:mo1KpFnV
+# LU - Luxembourg
+socks5|gw.proxi.st:9999:nrta23q1-cc-LU:mo1KpFnV
+# LV - Latvia
+socks5|gw.proxi.st:9999:nrta23q1-cc-LV:mo1KpFnV
+# LY - Libya
+socks5|gw.proxi.st:9999:nrta23q1-cc-LY:mo1KpFnV
+# MA - Morocco
+socks5|gw.proxi.st:9999:nrta23q1-cc-MA:mo1KpFnV
+# MC - Monaco
+socks5|gw.proxi.st:9999:nrta23q1-cc-MC:mo1KpFnV
+# MD - Moldova, Republic of
+socks5|gw.proxi.st:9999:nrta23q1-cc-MD:mo1KpFnV
+# ME - Montenegro
+socks5|gw.proxi.st:9999:nrta23q1-cc-ME:mo1KpFnV
+# MF - Saint Martin (French part)
+socks5|gw.proxi.st:9999:nrta23q1-cc-MF:mo1KpFnV
+# MG - Madagascar
+socks5|gw.proxi.st:9999:nrta23q1-cc-MG:mo1KpFnV
+# MH - Marshall Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-MH:mo1KpFnV
+# MK - North Macedonia
+socks5|gw.proxi.st:9999:nrta23q1-cc-MK:mo1KpFnV
+# ML - Mali
+socks5|gw.proxi.st:9999:nrta23q1-cc-ML:mo1KpFnV
+# MM - Myanmar
+socks5|gw.proxi.st:9999:nrta23q1-cc-MM:mo1KpFnV
+# MN - Mongolia
+socks5|gw.proxi.st:9999:nrta23q1-cc-MN:mo1KpFnV
+# MO - Macao
+socks5|gw.proxi.st:9999:nrta23q1-cc-MO:mo1KpFnV
+# MP - Northern Mariana Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-MP:mo1KpFnV
+# MQ - Martinique
+socks5|gw.proxi.st:9999:nrta23q1-cc-MQ:mo1KpFnV
+# MR - Mauritania
+socks5|gw.proxi.st:9999:nrta23q1-cc-MR:mo1KpFnV
+# MS - Montserrat
+socks5|gw.proxi.st:9999:nrta23q1-cc-MS:mo1KpFnV
+# MT - Malta
+socks5|gw.proxi.st:9999:nrta23q1-cc-MT:mo1KpFnV
+# MU - Mauritius
+socks5|gw.proxi.st:9999:nrta23q1-cc-MU:mo1KpFnV
+# MV - Maldives
+socks5|gw.proxi.st:9999:nrta23q1-cc-MV:mo1KpFnV
+# MW - Malawi
+socks5|gw.proxi.st:9999:nrta23q1-cc-MW:mo1KpFnV
+# MX - Mexico
+socks5|gw.proxi.st:9999:nrta23q1-cc-MX:mo1KpFnV
+# MY - Malaysia
+socks5|gw.proxi.st:9999:nrta23q1-cc-MY:mo1KpFnV
+# MZ - Mozambique
+socks5|gw.proxi.st:9999:nrta23q1-cc-MZ:mo1KpFnV
+# NA - Namibia
+socks5|gw.proxi.st:9999:nrta23q1-cc-NA:mo1KpFnV
+# NC - New Caledonia
+socks5|gw.proxi.st:9999:nrta23q1-cc-NC:mo1KpFnV
+# NE - Niger
+socks5|gw.proxi.st:9999:nrta23q1-cc-NE:mo1KpFnV
+# NF - Norfolk Island
+socks5|gw.proxi.st:9999:nrta23q1-cc-NF:mo1KpFnV
+# NG - Nigeria
+socks5|gw.proxi.st:9999:nrta23q1-cc-NG:mo1KpFnV
+# NI - Nicaragua
+socks5|gw.proxi.st:9999:nrta23q1-cc-NI:mo1KpFnV
+# NL - Netherlands
+socks5|gw.proxi.st:9999:nrta23q1-cc-NL:mo1KpFnV
+# NO - Norway
+socks5|gw.proxi.st:9999:nrta23q1-cc-NO:mo1KpFnV
+# NP - Nepal
+socks5|gw.proxi.st:9999:nrta23q1-cc-NP:mo1KpFnV
+# NR - Nauru
+socks5|gw.proxi.st:9999:nrta23q1-cc-NR:mo1KpFnV
+# NU - Niue
+socks5|gw.proxi.st:9999:nrta23q1-cc-NU:mo1KpFnV
+# NZ - New Zealand
+socks5|gw.proxi.st:9999:nrta23q1-cc-NZ:mo1KpFnV
+# OM - Oman
+socks5|gw.proxi.st:9999:nrta23q1-cc-OM:mo1KpFnV
+# PA - Panama
+socks5|gw.proxi.st:9999:nrta23q1-cc-PA:mo1KpFnV
+# PE - Peru
+socks5|gw.proxi.st:9999:nrta23q1-cc-PE:mo1KpFnV
+# PF - French Polynesia
+socks5|gw.proxi.st:9999:nrta23q1-cc-PF:mo1KpFnV
+# PG - Papua New Guinea
+socks5|gw.proxi.st:9999:nrta23q1-cc-PG:mo1KpFnV
+# PH - Philippines
+socks5|gw.proxi.st:9999:nrta23q1-cc-PH:mo1KpFnV
+# PK - Pakistan
+socks5|gw.proxi.st:9999:nrta23q1-cc-PK:mo1KpFnV
+# PL - Poland
+socks5|gw.proxi.st:9999:nrta23q1-cc-PL:mo1KpFnV
+# PM - Saint Pierre and Miquelon
+socks5|gw.proxi.st:9999:nrta23q1-cc-PM:mo1KpFnV
+# PN - Pitcairn
+socks5|gw.proxi.st:9999:nrta23q1-cc-PN:mo1KpFnV
+# PR - Puerto Rico
+socks5|gw.proxi.st:9999:nrta23q1-cc-PR:mo1KpFnV
+# PS - Palestine, State of
+socks5|gw.proxi.st:9999:nrta23q1-cc-PS:mo1KpFnV
+# PT - Portugal
+socks5|gw.proxi.st:9999:nrta23q1-cc-PT:mo1KpFnV
+# PW - Palau
+socks5|gw.proxi.st:9999:nrta23q1-cc-PW:mo1KpFnV
+# PY - Paraguay
+socks5|gw.proxi.st:9999:nrta23q1-cc-PY:mo1KpFnV
+# QA - Qatar
+socks5|gw.proxi.st:9999:nrta23q1-cc-QA:mo1KpFnV
+# RE - Réunion
+socks5|gw.proxi.st:9999:nrta23q1-cc-RE:mo1KpFnV
+# RO - Romania
+socks5|gw.proxi.st:9999:nrta23q1-cc-RO:mo1KpFnV
+# RS - Serbia
+socks5|gw.proxi.st:9999:nrta23q1-cc-RS:mo1KpFnV
+# RU - Russian Federation
+socks5|gw.proxi.st:9999:nrta23q1-cc-RU:mo1KpFnV
+# RW - Rwanda
+socks5|gw.proxi.st:9999:nrta23q1-cc-RW:mo1KpFnV
+# SA - Saudi Arabia
+socks5|gw.proxi.st:9999:nrta23q1-cc-SA:mo1KpFnV
+# SB - Solomon Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-SB:mo1KpFnV
+# SC - Seychelles
+socks5|gw.proxi.st:9999:nrta23q1-cc-SC:mo1KpFnV
+# SD - Sudan
+socks5|gw.proxi.st:9999:nrta23q1-cc-SD:mo1KpFnV
+# SE - Sweden
+socks5|gw.proxi.st:9999:nrta23q1-cc-SE:mo1KpFnV
+# SG - Singapore
+socks5|gw.proxi.st:9999:nrta23q1-cc-SG:mo1KpFnV
+# SH - Saint Helena, Ascension and Tristan da Cunha
+socks5|gw.proxi.st:9999:nrta23q1-cc-SH:mo1KpFnV
+# SI - Slovenia
+socks5|gw.proxi.st:9999:nrta23q1-cc-SI:mo1KpFnV
+# SJ - Svalbard and Jan Mayen
+socks5|gw.proxi.st:9999:nrta23q1-cc-SJ:mo1KpFnV
+# SK - Slovakia
+socks5|gw.proxi.st:9999:nrta23q1-cc-SK:mo1KpFnV
+# SL - Sierra Leone
+socks5|gw.proxi.st:9999:nrta23q1-cc-SL:mo1KpFnV
+# SM - San Marino
+socks5|gw.proxi.st:9999:nrta23q1-cc-SM:mo1KpFnV
+# SN - Senegal
+socks5|gw.proxi.st:9999:nrta23q1-cc-SN:mo1KpFnV
+# SO - Somalia
+socks5|gw.proxi.st:9999:nrta23q1-cc-SO:mo1KpFnV
+# SR - Suriname
+socks5|gw.proxi.st:9999:nrta23q1-cc-SR:mo1KpFnV
+# SS - South Sudan
+socks5|gw.proxi.st:9999:nrta23q1-cc-SS:mo1KpFnV
+# ST - Sao Tome and Principe
+socks5|gw.proxi.st:9999:nrta23q1-cc-ST:mo1KpFnV
+# SV - El Salvador
+socks5|gw.proxi.st:9999:nrta23q1-cc-SV:mo1KpFnV
+# SX - Sint Maarten (Dutch part)
+socks5|gw.proxi.st:9999:nrta23q1-cc-SX:mo1KpFnV
+# SY - Syrian Arab Republic
+socks5|gw.proxi.st:9999:nrta23q1-cc-SY:mo1KpFnV
+# SZ - Eswatini
+socks5|gw.proxi.st:9999:nrta23q1-cc-SZ:mo1KpFnV
+# TC - Turks and Caicos Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-TC:mo1KpFnV
+# TD - Chad
+socks5|gw.proxi.st:9999:nrta23q1-cc-TD:mo1KpFnV
+# TF - French Southern Territories
+socks5|gw.proxi.st:9999:nrta23q1-cc-TF:mo1KpFnV
+# TG - Togo
+socks5|gw.proxi.st:9999:nrta23q1-cc-TG:mo1KpFnV
+# TH - Thailand
+socks5|gw.proxi.st:9999:nrta23q1-cc-TH:mo1KpFnV
+# TJ - Tajikistan
+socks5|gw.proxi.st:9999:nrta23q1-cc-TJ:mo1KpFnV
+# TK - Tokelau
+socks5|gw.proxi.st:9999:nrta23q1-cc-TK:mo1KpFnV
+# TL - Timor-Leste
+socks5|gw.proxi.st:9999:nrta23q1-cc-TL:mo1KpFnV
+# TM - Turkmenistan
+socks5|gw.proxi.st:9999:nrta23q1-cc-TM:mo1KpFnV
+# TN - Tunisia
+socks5|gw.proxi.st:9999:nrta23q1-cc-TN:mo1KpFnV
+# TO - Tonga
+socks5|gw.proxi.st:9999:nrta23q1-cc-TO:mo1KpFnV
+# TR - Türkiye
+socks5|gw.proxi.st:9999:nrta23q1-cc-TR:mo1KpFnV
+# TT - Trinidad and Tobago
+socks5|gw.proxi.st:9999:nrta23q1-cc-TT:mo1KpFnV
+# TV - Tuvalu
+socks5|gw.proxi.st:9999:nrta23q1-cc-TV:mo1KpFnV
+# TW - Taiwan, Province of China
+socks5|gw.proxi.st:9999:nrta23q1-cc-TW:mo1KpFnV
+# TZ - Tanzania, United Republic of
+socks5|gw.proxi.st:9999:nrta23q1-cc-TZ:mo1KpFnV
+# UA - Ukraine
+socks5|gw.proxi.st:9999:nrta23q1-cc-UA:mo1KpFnV
+# UG - Uganda
+socks5|gw.proxi.st:9999:nrta23q1-cc-UG:mo1KpFnV
+# UM - United States Minor Outlying Islands
+socks5|gw.proxi.st:9999:nrta23q1-cc-UM:mo1KpFnV
+# US - United States
+socks5|gw.proxi.st:9999:nrta23q1-cc-US:mo1KpFnV
+# UY - Uruguay
+socks5|gw.proxi.st:9999:nrta23q1-cc-UY:mo1KpFnV
+# UZ - Uzbekistan
+socks5|gw.proxi.st:9999:nrta23q1-cc-UZ:mo1KpFnV
+# VA - Holy See (Vatican City State)
+socks5|gw.proxi.st:9999:nrta23q1-cc-VA:mo1KpFnV
+# VC - Saint Vincent and the Grenadines
+socks5|gw.proxi.st:9999:nrta23q1-cc-VC:mo1KpFnV
+# VE - Venezuela, Bolivarian Republic of
+socks5|gw.proxi.st:9999:nrta23q1-cc-VE:mo1KpFnV
+# VG - Virgin Islands, British
+socks5|gw.proxi.st:9999:nrta23q1-cc-VG:mo1KpFnV
+# VI - Virgin Islands, U.S.
+socks5|gw.proxi.st:9999:nrta23q1-cc-VI:mo1KpFnV
+# VN - Viet Nam
+socks5|gw.proxi.st:9999:nrta23q1-cc-VN:mo1KpFnV
+# VU - Vanuatu
+socks5|gw.proxi.st:9999:nrta23q1-cc-VU:mo1KpFnV
+# WF - Wallis and Futuna
+socks5|gw.proxi.st:9999:nrta23q1-cc-WF:mo1KpFnV
+# WS - Samoa
+socks5|gw.proxi.st:9999:nrta23q1-cc-WS:mo1KpFnV
+# YE - Yemen
+socks5|gw.proxi.st:9999:nrta23q1-cc-YE:mo1KpFnV
+# YT - Mayotte
+socks5|gw.proxi.st:9999:nrta23q1-cc-YT:mo1KpFnV
+# ZA - South Africa
+socks5|gw.proxi.st:9999:nrta23q1-cc-ZA:mo1KpFnV
+# ZM - Zambia
+socks5|gw.proxi.st:9999:nrta23q1-cc-ZM:mo1KpFnV
+# ZW - Zimbabwe
+socks5|gw.proxi.st:9999:nrta23q1-cc-ZW:mo1KpFnV
