@@ -210,6 +210,39 @@ always shows up as `dead` with a reason.
 
 With no `PROXIES` set the bot behaves exactly as before (direct).
 
+### Proxy file in Docker / Railway
+
+The `Dockerfile` copies `kro_proxies.txt` into the image as `/app/kro_proxies.txt`.
+`PROXY_FILE=kro_proxies.txt` is resolved relative to the bot directory (`/app`
+in the container), so it now resolves. Even if `PROXY_FILE` is unset or
+misspelled, `load_proxies()` auto-detects `kro_proxies.txt` and
+`proxies.txt` next to the script before falling back to
+`STATE_DIR/proxies.txt`.
+
+Startup log must say:
+
+```
+Proxy: ON (42 configured, mode=rotate)
+```
+
+`Proxy: OFF (direct)` means neither `PROXIES`, `PROXY_FILE`, nor the bundled
+`kro_proxies.txt` had a single usable line.
+
+**Credentials rejected?** If `/netcheck` reports
+`FAIL ProxyError: Invalid username/password` (or the SOCKS5 server answers
+`0x01/0x01`, or an HTTP proxy answers `407`), the bot is fine - the proxy
+gateway itself refused the `user:pass`. No code change can fix that. Verify
+locally without the bot:
+
+```bash
+python tools/check_proxies.py kro_proxies.txt
+```
+
+It prints `OK` + exit IP per proxy, or `AUTH REJECTED` / `FAIL`, and exits
+non-zero when no proxy authenticates. Copy fresh `user:pass` from the panel
+into `kro_proxies.txt`, push, then send `/proxy reload` in Telegram.
+
+
 ## Deployment
 
 Docker:

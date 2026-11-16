@@ -245,11 +245,14 @@ _FIELD_RE = re.compile(r"^\s*[\u2013\-]\s*([^:]+?)\s*:\s*(.*)$")
 
 SCHEMA_SQL = """create table if not exists accounts (
   id bigserial primary key, owner bigint, username text not null unique, x_id text,
-  cookies jsonb not null, country text, yr text, followers int default 0,
+  cookies jsonb not null default '{}'::jsonb, country text, yr text,
+  followers int default 0,
   protected boolean default false, verified boolean default false,
   status text default 'live', fails int default 0, source text,
   created_at timestamptz default now(), last_check timestamptz,
   last_ok timestamptz, last_post timestamptz);
+alter table accounts alter column cookies set default '{}'::jsonb;
+alter table accounts alter column status set default 'live';
 create index if not exists accounts_status_idx on accounts (status);
 create index if not exists accounts_country_idx on accounts (country);
 create index if not exists accounts_check_idx on accounts (last_check);
@@ -277,13 +280,16 @@ FILES = {
                      "# proxies (X traffic only). HTTP/SOCKS5 endpoints, not vless://\n"
                      "# formats: http://u:p@1.2.3.4:8080  socks5://u:p@host:1080\n"
                      "#          socks5|host:port:user:pass  [2001:db8::1]:1080:user:pass\n"
-                     "PROXIES=\nPROXY_FILE=\nPROXY_MODE=rotate\nPROXY_TYPE=http\n"
+                     "PROXIES=\nPROXY_FILE=kro_proxies.txt\n"
+                     "PROXY_MODE=rotate\nPROXY_TYPE=socks5\n"
                      "PROXY_TEST_URL=https://api.x.com/1.1/account/verify_credentials.json\n"
                      "NETCHECK_ON_START=1\n"),
     "Dockerfile": ("FROM python:3.12-slim\nWORKDIR /app\n"
                    "ENV PYTHONUNBUFFERED=1 STORE_PATH=/app/users.json\n"
                    "COPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n"
-                   f"COPY {SELF} bot.py\nCMD [\"python\",\"bot.py\"]\n"),
+                   f"COPY {SELF} bot.py\n"
+                   "COPY kro_proxies.txt /app/kro_proxies.txt\n"
+                   "CMD [\"python\",\"bot.py\"]\n"),
     "railway.toml": ('[build]\nbuilder = "DOCKERFILE"\ndockerfilePath = "Dockerfile"\n\n'
                      '[deploy]\nrestartPolicyType = "ON_FAILURE"\nrestartPolicyMaxRetries = 10\n'),
     "schema.sql": SCHEMA_SQL,
@@ -451,6 +457,13 @@ async def db_upsert(client, rows):
     if not rows:
         return 0, "no username"
 
+    # PostgREST ka upsert = INSERT ... ON CONFLICT DO UPDATE. Postgres NOT NULL
+    # constraints conflict resolution se PEHLE check karta hai, isliye jin rows
+    # mein `cookies` (not null column) nahi hai un par 23502 aata hai - chahe
+    # row pehle se maujood ho. Aisi partial rows ko PATCH se update karo.
+    full = [r for r in rows if r.get("cookies") is not None]
+    partial = [r for r in rows if r.get("cookies") is None]
+
     async def push(chunk, depth=0):
         try:
             r = await client.post(
@@ -465,11 +478,29 @@ async def db_upsert(client, rows):
         if len(chunk) > 1 and depth < 4:
             # Ek kharab row poore chunk ko na girde - aadha aadha retry karo.
             mid = len(chunk) // 2
-            return await push(chunk[:mid], depth + 1) + await push(chunk[mid:], depth + 1)
+            a, b = await asyncio.gather(push(chunk[:mid], depth + 1),
+                                        push(chunk[mid:], depth + 1))
+            return (a or 0) + (b or 0)
+        # Har path par int return karo - None + None crash ka source yahi tha.
+        return 0
 
     ok = 0
-    for i in range(0, len(rows), 200):
-        ok += await push(rows[i:i + 200])
+    for i in range(0, len(full), 200):
+        ok += (await push(full[i:i + 200])) or 0
+
+    if partial:
+        sem = asyncio.Semaphore(8)
+
+        async def patch_one(row):
+            uname = row.get("username")
+            payload = {k: v for k, v in row.items() if k != "username"}
+            if not uname or not payload:
+                return 1
+            async with sem:
+                return 1 if await db_patch(client, uname, payload) else 0
+
+        results = await asyncio.gather(*(patch_one(r) for r in partial))
+        ok += sum(results)
     return ok, (None if ok else "upsert fail")
 
 
@@ -1137,8 +1168,8 @@ async def live_check(client, ck):
             d["Status"] = "SUSPENDED"
             d["Reason"] = err_reason(codes)
         else:
-            # Check for rate limit (429) - not dead, just throttle
-            if codes & LIMIT_CODES or (not codes and "daily" in ((r.text or "")[:400] if 'r' else "") and "limit" in ((r.text or "")[:400] if 'r' else "")):
+            # 429 / limit codes = throttle, not dead.
+            if codes & LIMIT_CODES:
                 d["Status"] = "RATE_LIMITED"
                 d["Reason"] = "rate limited"
             else:
@@ -2927,24 +2958,37 @@ def norm_proxy(raw, default_scheme=None):
 
 
 def load_proxies():
-    """PROXIES env + PROXY_FILE + /proxy add file, dedupe.
+    """PROXIES env + PROXY_FILE + bundled kro_proxies.txt + /proxy add file.
 
-    /proxy reload isse dobara chalata hai.
+    /proxy reload isse dobara chalata hai. PROXY_FILE set na ho ya galat ho
+    to bhi repo ke saath aayi `kro_proxies.txt` khud dhoond li jati hai.
     """
     global PROXIES
     raw = os.getenv("PROXIES", PROXIES_RAW)
     items = [x for x in re.split(r"[\s,]+", raw or "") if x]
-    env_file = os.getenv("PROXY_FILE", PROXY_FILE)
-    for path in (env_file, RUNTIME_PROXY_FILE):
+    env_file = os.getenv("PROXY_FILE", PROXY_FILE).strip()
+    candidates = []
+    if env_file:
+        candidates.append(env_file)
+    # Bundled/auto-detect fallbacks (PROXY_FILE bhoolne par bhi proxy ON).
+    candidates += ["kro_proxies.txt", "proxies.txt"]
+    candidates.append(RUNTIME_PROXY_FILE)
+    seen_paths = set()
+    for path in candidates:
         if not path:
             continue
         fp = path if os.path.isabs(path) else os.path.join(HERE, path)
+        key = os.path.normcase(os.path.abspath(fp))
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
         try:
             with open(fp, encoding="utf-8", errors="ignore") as fh:
                 items += fh.read().splitlines()
         except FileNotFoundError:
-            if path != RUNTIME_PROXY_FILE:
-                logging.warning("PROXY_FILE nahi mila: %s", fp)
+            if env_file and path == env_file:
+                logging.warning("PROXY_FILE nahi mila: %s "
+                                "(bundled kro_proxies.txt check ho rahi hai)", fp)
         except Exception:
             logging.exception("PROXY_FILE")
     out, seen = [], set()
@@ -3144,6 +3188,15 @@ def proxy_status_text():
 def _proxy_tips(res):
     bad = [r for r in res if r]
     tips = []
+    auth_reject = any(
+        ("Invalid username/password" in (r.get("why") or ""))
+        or ("InvalidUserNamePassword" in (r.get("why") or ""))
+        or ("ProxyError" in (r.get("why") or "") and "auth" in (r.get("why") or "").lower())
+        for r in bad)
+    if auth_reject:
+        tips.append("proxy khud credentials reject kar raha hai (SOCKS5 0x01/0x01 "
+                    "ya HTTP 407) - user:pass galat ya expire hai. Panel se naye "
+                    "creds lo aur /proxy reload chalao.")
     if any(r.get("code") == 407 for r in bad):
         tips.append("407 = proxy auth chahiye (user:pass@host:port)")
     if any("SSL" in (r.get("why") or "") for r in bad):
@@ -4247,6 +4300,13 @@ async def netcheck_report(proxy_limit=10):
             verdict += ("\n404/307 = ye proxy endpoint nahi, panel/subscription URL hai."
                         "\nProvider ka host:port:user:pass /proxy add socks5 ... se daalo, "
                         "ya xray/sing-box se socks5://127.0.0.1:1080 banao.")
+        elif ("Invalid username/password" in whys or "ProxyError" in whys
+              or "AUTH" in whys.upper()):
+            verdict += ("\nProxy server khud AUTH reject kar raha hai (SOCKS5 "
+                        "0x01/0x01 ya HTTP 407). Host/port sahi hai, user:pass "
+                        "galat ya expire hai.\nPanel se naya user:pass copy karo, "
+                        "kro_proxies.txt update karo, phir /proxy reload.\n"
+                        "Local test: python tools/check_proxies.py")
         elif "Timeout" in whys:
             verdict += ("\nTimeout = proxy handshake atak raha hai; port/protocol "
                         "galat ya proxy down. /proxy detect <entry> try karo.")
@@ -4287,11 +4347,13 @@ async def startup_netcheck(app):
         logging.exception("startup_netcheck")
         return
     logging.warning("startup %s", txt.replace("\n", " | "))
+    # Telegram single message limit 4096 chars - lamba report 400 deta hai.
+    body = txt if len(txt) <= 4000 else txt[:3990] + "\n…"
     for aid in ADMIN_IDS:
         try:
-            await app.bot.send_message(aid, txt)
-        except Exception:
-            logging.warning("netcheck alert fail %s", aid)
+            await app.bot.send_message(aid, body)
+        except Exception as e:
+            logging.warning("netcheck alert fail %s: %s", aid, e)
 
 
 async def mode_cmd(u, c):
@@ -6092,9 +6154,11 @@ def main():
     load_store()
     load_proxies()
     if PROXIES:
-        logging.info("Proxy: %s configured (%s)", len(PROXIES), proxy_mode())
+        logging.info("Proxy: ON (%s configured, mode=%s)",
+                     len(PROXIES), proxy_mode())
     else:
-        logging.info("Proxy: OFF (direct)")
+        logging.warning("Proxy: OFF (direct) - PROXIES/PROXY_FILE khaali hai "
+                        "aur kro_proxies.txt bhi nahi mili")
     os.makedirs(CAMP_MEDIA_DIR, exist_ok=True)
     if not db_enabled():
         logging.warning("SUPABASE_URL/KEY missing - DB features off")
