@@ -1,0 +1,57 @@
+# KRO Proxies for Evil Markhors Bot
+# Format: socks5|host:port:user:pass
+# PROXY_TYPE must be set to "socks5" in .env
+# PROXY_MODE can be "rotate" or "random"
+
+# United States
+socks5|gw.proxi.st:9999:nrta23q1-cc-US:mo1KpFnV 
+socks5|gwi.st:9999:nrta23q1-cc-US:mo1KpFnV 
+
+# South Korea (Primary Target)
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV 
+
+# Asia Pacific
+socks5|gw.proxi.st:9999:nrta23q1-cc-JP:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-SG:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-HK:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-TW:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-MY:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-ID:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-PH:mo1KpFnV 
+
+# Europe
+socks5|gw.proxi.st:9999:nrta23q1-cc-GB:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-DE:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-FR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-NL:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-ES:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-IT:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-SE:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-NO:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-CH:mo1KpFnV 
+
+# Middle East
+socks5|gw.proxi.st:9999:nrta23q1-cc-AE:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-SA:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-QA:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-KW:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-OM:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-BH:mo1KpFnV 
+
+# Americas
+socks5|gw.proxi.st:9999:nrta23q1-cc-CA:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-BR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-AR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-MX:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-CO:mo1KpFnV 
+
+# Africa & Oceania
+socks5|gw.proxi.st:9999:nrta23q1-cc-AU:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-ZA:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-EG:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-NG:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-KE:mo1KpFnV
