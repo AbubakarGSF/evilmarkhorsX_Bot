@@ -283,3 +283,103 @@ Supabase (non-proxy) calls now reuse a shared `httpx.AsyncClient` for
 connection pooling, reducing TLS handshake overhead. X API calls still create
 fresh clients per operation so proxy rotation and bans work correctly.
 
+## Proxies
+
+X traffic can go through proxies; Telegram and Supabase always stay direct.
+
+| Var | Meaning |
+| --- | --- |
+| `PROXIES` | comma/space separated list, e.g. `http://u:p@1.2.3.4:8080,socks5://5.6.7.8:1080` |
+| `PROXY_FILE` | path to a file with one proxy per line (`#` comments ok); can live on the volume |
+| `PROXY_TYPE` | scheme for lines without one: `http` (default), `https`, `socks5`, `socks5h` |
+| `PROXY_MODE` | `rotate` (round robin, default) or `random` |
+| `PROXY_TEST_URL` | health-check URL, default `https://api.x.com/1.1/account/verify_credentials.json` |
+| `NETCHECK_ON_START` | send a one-time reachability summary to admins after deploy (default `1`) |
+
+### Supported schemes are `http`, `https`, `socks5` and `socks5h` (SOCKS needs
+`httpx[socks]`, already in `requirements.txt`). `socks5h` asks the proxy to
+resolve DNS remotely. Hiddify/xray share links (`vless/vmess/ss`, `trojan://`)
+are **not** HTTP proxies and cannot be used directly - export the subscription into
+a local SOCKS5 listener (xray or sing-box) and point `PROXIES` at it.
+
+### Accepted proxy line formats:
+
+```
+http://user:pass@1.2.3.4:8080
+socks5://user:pass@1.2.3.4:1080
+socks5h://user:pass@proxy.example.com:1080
+45.144.31.82:5000:LzaUSER:CWNXXXX      # provider panel, needs PROXY_TYPE=socks5
+socks5|45.144.31.82:5000:LzaUSER:CWNXXXX (inline marker, PROXY_TYPE bypass)
+socks5:45.144.31.82:5000:LzaUSER:CWNXXXX
+[2001:db8::1]:5000:LzaUSER:CWNXXXX     # IPv6 (brackets optional)
+45.144.31.82:5000                       # host:port, no auth
+```
+
+If a provider entry has no scheme, `PROXY_TYPE` decides what it is. An inline
+`socks5|` / `socks5:` / `socks5h|` marker always wins, so mixed lists work.
+
+Rotation is per request, and only connection errors fail over to the next
+proxy; a request that was already sent is never retried, so a tweet cannot be
+posted twice.
+
+If a proxy password contains `,` or spaces, percent-encode it (`%2C`, `%20`)
+or put the proxy in `PROXY_FILE` (one per line).
+
+Provider links that look like `https://1.1.1.1:2001/name` are accepted, but the
+path part is ignored (httpx only uses scheme/host/port/auth). If the proxy
+needs a login, pass it as `http://user:pass@host:port` and run `/proxy test`:
+`407` means auth is missing, an SSL error means the port is plain HTTP (use
+`http://`). Path-auth links are converted automatically: `https://host:port/user/pass`
+(or `/user:pass`) becomes `https://user:pass@host:port`, so a provider that
+prints credentials in the path works as-is.
+
+Admin commands: `/proxy` (status, credentials masked), `/proxy test` (ok/fail + latency per proxy), `/proxy list`, `/proxy detect entry` (tries SOCKS5 and HTTP, tells you which protocol that host:port speaks), `/proxy add [auto|type]` (validate, optionally auto-detect, and save to `STATE_DIR/proxies.txt` on the volume), `/proxy clear` (remove saved runtime proxies), `/proxy reload` (re-read `PROXY_FILE` and the runtime file), `/proxy off|on` (disable/enable proxies for the current run without redeploying).
+
+If every cookie comes back `unknown` with no `dead`, the cookies were never
+checked - X was not reachable through the configured route. `/netcheck` tells
+you whether direct or the proxies are the problem; suspension/lock always shows
+up as `dead` with a reason.
+
+With no `PROXIES` set the bot behaves exactly as before (direct).
+
+### Example `.env` configuration:
+
+```env
+# Proxy Configuration
+PROXIES=              # Leave empty if using PROXY_FILE
+PROXY_FILE=kro_proxies.txt   # File with one proxy per line
+PROXY_TYPE=socks5     # Type: http, https, socks5, socks5h
+PROXY_MODE=rotate     # rotate (round robin) or random
+PROXY_TEST_URL=https://api.x.com/1.1/account/verify_credentials.json
+```
+
+### Example `kro_proxies.txt` format (SOCKS5 with inline marker):
+
+```
+socks5|gw.proxi.st:9999:nrta23q1-cc-KR:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-US:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-JP:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-SG:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-CA:mo1KpFnV 
+socks5|gw.proxi.st:9999:nrta23q1-cc-BR:mo1KpFnV 
+...
+```
+
+The file should be placed in the same directory as `evilmarkhorsx_bot.py` or
+pointed to via `PROXY_FILE` env variable. Each line is a proxy entry, `#`
+comments are ignored.
+
+### Proxy Testing
+
+Run `/proxy test` to test all configured proxies and see latency/results.
+Run `/proxy detect entry` to test a specific host:port and detect whether it
+speaks HTTP or SOCKS5 protocol.
+
+### Deployment Notes
+
+- On Railway/Docker, set the env variables in the dashboard
+- `PROXY_FILE` path is relative to the bot script directory
+- Saved runtime proxies are stored in `STATE_DIR/proxies.txt` and are
+  chmod 600 and gitignored
+- Rotate proxy credentials periodically for security
+
