@@ -15,6 +15,11 @@ batch_*.json
 del_data/
 camp_media/
 
+# scan artifacts (raw results, can be large)
+live_working.json
+working_proxies.json
+scan_countries.json
+
 # envs
 venv/
 .venv/

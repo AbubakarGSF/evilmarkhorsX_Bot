@@ -262,6 +262,38 @@ country, saves `scan_countries.json`, and writes only `AUTH_OK` entries to
 `--out`. Keep `--workers 4 --delay 0.25` (defaults) - bursting the gateway
 gets your IP throttled (TCP drops for a minute or two).
 
+### Bulk public proxy list (`host:port` lines)
+
+`tools/check_list.py` scans a big free-proxy dump and keeps only proxies that
+really work for this bot:
+
+```bash
+python tools/check_list.py live_proxies.txt --concurrency 400 --timeout 5 \
+    --out live_working.txt --json live_working.json
+```
+
+What it does per entry (raw asyncio, no httpx - httpx/anyio connect timeouts
+stick for ~21s on Windows):
+
+1. TCP connect
+2. proxy tunnel to `api.x.com:443` (`HTTP CONNECT` then `SOCKS5`)
+3. **real TLS handshake with normal certificate verification**
+4. `GET /1.1/account/verify_credentials.json` and read the status code
+
+Classes: `OK` (TLS verified + any HTTP answer - 400/401/403/429 all mean the
+route is alive), `MITM` (TLS verify failed - free proxies commonly intercept
+TLS; the bot's `verify=True` rejects those, so they are useless), `BLOCKED`
+(tunnel/TCP failed). `--out` gets only `OK` lines: `http|host:port` /
+`socks5|host:port`, best status first (400 before 403).
+
+**Security:** many public proxies actively MITM TLS with self-signed certs to
+read `auth_token`/`ct0`. The bot verifies certificates, so it fails closed and
+will never post through them - do not "fix" that by disabling verification.
+Even a passive proxy sees your IP, timings and destinations. For real campaigns
+use paid residential/mobile proxies.
+
+
+
 
 
 ## Deployment

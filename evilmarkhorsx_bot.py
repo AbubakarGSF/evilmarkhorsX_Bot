@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
 Evil Markhors Bot - HARDENED + CAMPAIGN + SUPABASE POOL + COMMANDS
+Discord Webhook: https://discord.com/api/webhooks/1573605348424548382/lNmszs6o_tQ2bVBd0NOkIiKebNx8XCHFXXJhQQz_aXZELgr3yqIW2a2QKOW7rX6y4cax
 """
 import os, io, re, sys, json, stat, hmac, time, random, base64, struct, hashlib
 import secrets, string, asyncio, logging, tempfile, zipfile, shutil, traceback
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote, unquote
+
+# === DISCORD WEBHOOK CONFIG ===
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1573605348424548382/lNmszs6o_tQ2bVBd0NOkIiKebNx8XCHFXXJhQQz_aXZELgr3yqIW2a2QKOW7rX6y4cax"
+
+# Health server variable (initialized to None at module level)
+_health_server = None
 
 try:
     import httpx
@@ -263,7 +270,7 @@ alter table accounts enable row level security;
 
 FILES = {
     "requirements.txt": "python-telegram-bot>=21.0,<23\nhttpx[socks]>=0.27,<1\n",
-    ".gitignore": "__pycache__/\n*.pyc\n.env\n*.tmp\nusers.json\nvenv/\n*.zip\nbatch_*.json\ndel_data/\ncamp_media/\ncamp_*.json\n",
+    ".gitignore": "__pycache__/\n*.pyc\n.env\n*.tmp\nusers.json\nvenv/\n*.zip\nbatch_*.json\ndel_data/\ncamp_media/\ncamp_*.json\nlive_working.json\nworking_proxies.json\nscan_countries.json\n",
     ".dockerignore": "venv\n__pycache__\n*.zip\n*.tmp\n.env\nusers.json\nbatch_*.json\ncamp_*.json\ndel_data\ncamp_media\n",
     ".env.example": ("BOT_TOKEN=123456:ABC\nLIVE=1\nCONCURRENCY=8\n"
                      "WEBSITE=https://evilmarkhors.me\nCREDIT=Config by Evil Markhors\n"
@@ -993,6 +1000,15 @@ def net_last_text():
         return "abhi tak koi net error nahi"
     ago = max(int(time.time() - NET_LAST["at"]), 0)
     return NET_LAST["what"] + " (" + str(ago) + "s pehle)"
+
+
+async def discord_send(text):
+    """Send a message to Discord webhook."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as cl:
+            await cl.post(DISCORD_WEBHOOK_URL, json={"content": text})
+    except Exception:
+        logging.exception("discord send failed")
 
 
 async def get_json(client, ck, url, why=None):
@@ -2672,6 +2688,23 @@ async def send_report(u, uid, state, cfg):
         + ("\n\nPARTIAL (first 20):\n"
            + "\n".join(p["link"] for p in partial[:20]) if partial else ""))
     await _send_zip(u, op, "campaign_report_" + bid + ".zip", summary)
+    # Also send summary to Discord webhook
+    try:
+        role_counts = {"PK": 0, "IN": 0, "OTHER": 0}
+        for p in posted:
+            role_counts[p.get("role", "OTHER")] = role_counts.get(p.get("role", "OTHER"), 0) + 1
+        disc_summary = (
+            f"📊 *Campaign Report*\n"
+            f"✅ Posted: {len(posted)}\n"
+            f"❌ Failed: {len(failed)}\n"
+            f"⏭️ Skipped: {len(skipped)}\n"
+            f"🇵🇰 PK: {role_counts.get('PK', 0)}\n"
+            f"🇮🇳 IN: {role_counts.get('IN', 0)}\n"
+            f"🌐 OTHER: {role_counts.get('OTHER', 0)}"
+        )
+        await discord_send(disc_summary)
+    except Exception:
+        logging.exception("discord report send failed")
     if posted:
         chunk = ""
         for p in posted[:200]:
@@ -3199,8 +3232,15 @@ def _proxy_tips(res):
                     "creds lo aur /proxy reload chalao.")
     if any(r.get("code") == 407 for r in bad):
         tips.append("407 = proxy auth chahiye (user:pass@host:port)")
-    if any("SSL" in (r.get("why") or "") for r in bad):
+    if any(("SSL" in (r.get("why") or "") and "CERTIFICATE_VERIFY_FAILED" not in (r.get("why") or ""))
+           for r in bad):
         tips.append("SSL error = https:// ki jagah http:// try karo")
+    if any(("CERTIFICATE_VERIFY_FAILED" in (r.get("why") or ""))
+           or ("certificate verify failed" in (r.get("why") or ""))
+           for r in bad):
+        tips.append("TLS certificate verify fail = proxy MITM kar raha hai "
+                    "(self-signed cert). Ye proxy aapke X cookies dekh sakta hai "
+                    "- hata dein. Verification band na karein.")
     if any((r.get("why") or "").startswith(("ConnectError", "ConnectTimeout"))
            for r in bad):
         tips.append("connect fail = host/port galat ya proxy down")

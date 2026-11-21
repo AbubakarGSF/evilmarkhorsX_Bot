@@ -1,0 +1,2 @@
+# verified proxies 2026-11-17 03:33 | target https://api.x.com/1.1/account/verify_credentials.json
+# format: scheme|host:port  (TLS verified, X reachable)
