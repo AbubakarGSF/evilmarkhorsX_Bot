@@ -10,9 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY evilmarkhorsx_bot.py bot.py
 
-# Proxy list ko image ke andar rakho (/app/kro_proxies.txt). Iske baghair
-# PROXY_FILE=kro_proxies.txt container mein kabhi nahi milta aur bot direct
-# (proxy OFF) chalta hai.
-COPY kro_proxies.txt /app/kro_proxies.txt
+# Proxy list container mein na ho to bot direct (proxy OFF) chalta hai.
+# Isliye kro_proxies.txt copy nahi kar rahe - direct X connection use karega.
+# Agar chahen to Railway ya local .env mein PROXY_FILE set karke phir se proxy ON kar saktein.
 
 CMD ["python", "bot.py"]
